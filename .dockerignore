@@ -1,0 +1,13 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+tests
+bench
+alembic/versions/__pycache__
+qdrant_storage
+pgdata
+.env

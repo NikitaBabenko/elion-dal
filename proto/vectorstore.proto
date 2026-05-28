@@ -1,0 +1,85 @@
+syntax = "proto3";
+
+package elion.vectorstore.v1;
+
+// VectorStore — Data Access Layer «Элиона».
+// Принимает документы (чистый текст + метаданные), внутри чанкует, эмбеддит
+// (BGE-M3 dense + sparse), хранит в Postgres (SoT) и Qdrant (индекс),
+// отдаёт результаты гибридного поиска (RRF). Сервис не вызывает LLM и не
+// принимает решения о fallback — он лишь ищет и возвращает raw-скоры.
+service VectorStore {
+  // Индексация документов. Стрим: ETL/сидер шлёт документы пачкой.
+  // Идемпотентно по content_hash (неизменённые документы пропускаются).
+  rpc UpsertDocuments(stream Document) returns (UpsertResult);
+
+  // Гибридный поиск (dense + sparse, fusion = RRF).
+  rpc Search(SearchRequest) returns (SearchResponse);
+
+  // Удалить все документы/чанки источника из PG и Qdrant (переиндексация).
+  rpc DeleteBySource(SourceRef) returns (DeleteResult);
+
+  // Проверка живости + доступности зависимостей.
+  rpc HealthCheck(HealthRequest) returns (HealthStatus);
+}
+
+message Document {
+  string doc_id = 1;        // стабильный ID документа (напр. URL-хеш)
+  string source_id = 2;     // один из 6 источников / "knowledge_base"
+  string url = 3;           // первоисточник для Evidence Trace
+  string title = 4;
+  string text = 5;          // уже очищенный текст
+  string lang = 6;          // "ru" по умолчанию
+  int64 published_ts = 7;   // unix-время публикации (приоритет свежих дат)
+  string content_hash = 8;  // sha256 текста; если не задан — посчитаем сами
+  bool index_in_rag = 9;    // false для бланков-на-скачивание (не индексируются)
+}
+
+message UpsertResult {
+  uint32 documents_received = 1;
+  uint32 documents_indexed = 2;   // реально переиндексировано (изменились)
+  uint32 documents_skipped = 3;   // не изменились по хешу
+  uint32 documents_blank = 4;     // index_in_rag=false
+  uint32 chunks_upserted = 5;
+}
+
+message SearchRequest {
+  string query = 1;
+  uint32 top_k = 2;                 // 0 -> дефолт из конфига (Топ-3)
+  repeated string source_ids = 3;   // фильтр по источникам (пусто = все)
+  int64 min_published_ts = 4;       // 0 -> без фильтра по дате
+}
+
+message Hit {
+  string chunk_id = 1;
+  string doc_id = 2;
+  string source_id = 3;
+  string url = 4;
+  string title = 5;
+  string text = 6;
+  float score = 7;          // итоговый RRF-скор
+  float dense_score = 8;    // raw cosine (опц., для порога уверенности RAG-ядра)
+  float sparse_score = 9;   // raw sparse (опц.)
+}
+
+message SearchResponse {
+  repeated Hit hits = 1;
+}
+
+message SourceRef {
+  string source_id = 1;
+}
+
+message DeleteResult {
+  uint32 documents_deleted = 1;
+  uint32 chunks_deleted = 2;
+}
+
+message HealthRequest {}
+
+message HealthStatus {
+  bool ok = 1;
+  bool qdrant_ok = 2;
+  bool postgres_ok = 3;
+  string embedding_backend = 4;
+  string detail = 5;
+}

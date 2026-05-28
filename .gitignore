@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.eggs/
+build/
+dist/
+
+# Env / secrets
+.env
+
+# Test / cache
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Model caches (BGE-M3 / ONNX скачиваются в рантайме)
+.cache/
+models/
+
+# Docker volumes (на случай локального bind-mount)
+qdrant_storage/
+pgdata/
+
+# Локальный режим без Docker: embedded-Qdrant и SQLite-файлы
+qdrant_local/
+qdrant_demo/
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Сгенерированный gRPC-код держим в репо? — нет, генерируем (см. scripts/gen_proto)
+src/elion_dal/grpc_gen/*_pb2.py
+src/elion_dal/grpc_gen/*_pb2.pyi
+src/elion_dal/grpc_gen/*_pb2_grpc.py
