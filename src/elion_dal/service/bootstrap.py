@@ -29,7 +29,7 @@ def build_index_service(settings: Settings | None = None, ensure: bool = True) -
     chunker = Chunker(
         chunk_tokens=settings.chunk_tokens,
         chunk_overlap=settings.chunk_overlap,
-        model_name=settings.embedding_model,
+        model_name=settings.chunk_tokenizer_model,
     )
     if ensure:
         qdrant.ensure_collection()

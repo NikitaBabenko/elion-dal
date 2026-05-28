@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     # Чанкинг
     chunk_tokens: int = 400
     chunk_overlap: int = 64
+    # Токенайзер для подсчёта длины чанков. Намеренно НЕ привязан к embedding_model:
+    # bge-m3-токенайзер даёт стабильное сегментирование независимо от бэкенда эмбеддингов.
+    chunk_tokenizer_model: str = "BAAI/bge-m3"
 
     # Поиск
     search_top_k: int = 3

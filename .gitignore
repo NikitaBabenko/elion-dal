@@ -25,8 +25,7 @@ qdrant_storage/
 pgdata/
 
 # Локальный режим без Docker: embedded-Qdrant и SQLite-файлы
-qdrant_local/
-qdrant_demo/
+qdrant_*/
 *.db
 *.sqlite
 *.sqlite3
