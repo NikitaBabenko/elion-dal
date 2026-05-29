@@ -106,6 +106,15 @@ grpcurl -plaintext -d '{"query":"налоговый вычет","top_k":3}' \
   localhost:50051 elion.vectorstore.v1.VectorStore/Search
 ```
 
+## CI и воспроизводимость
+
+- **CI** (`.github/workflows/ci.yml`): на push/PR — установка, кодоген proto, `ruff`,
+  offline unit-тесты (`-m "not integration"`).
+- **Lock** (`requirements.lock`, через `pip-compile`): пиннинг рантайм-зависимостей;
+  Docker ставит по локу (`pip install -r requirements.lock` + `pip install --no-deps .`).
+  Windows-only пакеты помечены маркером `sys_platform == "win32"`. Для прод-деплоя лок
+  желательно регенерировать на целевой платформе (Linux) или через `uv`.
+
 ## Тесты
 
 ```bash

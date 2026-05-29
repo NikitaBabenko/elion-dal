@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from ..config import Settings
 from ..grpc_gen import vectorstore_pb2 as pb
@@ -76,12 +77,22 @@ class VectorStoreServicer(pb_grpc.VectorStoreServicer):
 
     def Search(self, request, context) -> pb.SearchResponse:
         top_k = request.top_k or self.settings.search_top_k
+        t0 = time.perf_counter()
         hits = self.index.search(
             query=request.query,
             top_k=top_k,
             source_ids=list(request.source_ids),
             min_published_ts=request.min_published_ts,
         )
+        dt_ms = (time.perf_counter() - t0) * 1000
+        if hits:
+            logger.info(
+                "search hits=%d top_score=%.4f dense=%.4f %.0fms query=%r",
+                len(hits), hits[0].score, hits[0].dense_score, dt_ms, request.query,
+            )
+        else:
+            # no-hit -> сигнал к fallback (доля таких запросов = Fallback Rate в ТЗ).
+            logger.info("search NO-HIT %.0fms query=%r", dt_ms, request.query)
         return pb.SearchResponse(
             hits=[
                 pb.Hit(

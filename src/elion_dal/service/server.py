@@ -5,24 +5,69 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import grpc
 
-from ..config import get_settings
+from ..config import Settings, get_settings
 from ..grpc_gen import vectorstore_pb2 as pb
 from ..grpc_gen import vectorstore_pb2_grpc as pb_grpc
+from ..logging_setup import setup_logging
 from .bootstrap import build_index_service
 from .servicer import VectorStoreServicer
+
+logger = logging.getLogger(__name__)
+
+
+def _wait_for_backends(index, settings: Settings) -> None:
+    """Backoff-ретрай создания коллекции и доступности Qdrant/Postgres на старте."""
+    last_err: Exception | None = None
+    for attempt in range(1, settings.startup_retries + 1):
+        try:
+            index.qdrant.ensure_collection()
+            if index.pg.ping() and index.qdrant.ping():
+                return
+            raise RuntimeError("Qdrant/Postgres ещё недоступны")
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            logger.warning(
+                "Старт: бэкенды недоступны (попытка %d/%d): %s",
+                attempt,
+                settings.startup_retries,
+                e,
+            )
+            time.sleep(settings.startup_retry_delay_s)
+    raise RuntimeError(f"Не удалось подключиться к бэкендам за отведённые попытки: {last_err}")
+
+
+def _max_workers(settings: Settings) -> int:
+    # Embedded-Qdrant (:memory:/on-disk) не потокобезопасен — гоняем в 1 поток.
+    if not settings.qdrant_url.startswith(("http://", "https://")):
+        logger.warning(
+            "Embedded-Qdrant (%s): max_workers=1 (нет потокобезопасности).", settings.qdrant_url
+        )
+        return 1
+    return settings.grpc_max_workers
 
 
 def serve() -> None:
     settings = get_settings()
-    print(f"[elion-dal] backend={settings.embedding_backend} model={settings.embedding_model}")
-    print("[elion-dal] загрузка эмбеддинг-модели и инициализация хранилищ...")
-    index = build_index_service(settings)
+    setup_logging(settings.log_level)
+    logger.info(
+        "backend=%s model=%s", settings.embedding_backend, settings.embedding_model or "(default)"
+    )
+    logger.info("Загрузка эмбеддинг-модели и инициализация хранилищ...")
+    index = build_index_service(settings, ensure=False)  # модель грузим один раз
+    _wait_for_backends(index, settings)
 
-    server = grpc.server(ThreadPoolExecutor(max_workers=8))
+    mb = settings.grpc_max_message_mb * 1024 * 1024
+    options = [
+        ("grpc.max_send_message_length", mb),
+        ("grpc.max_receive_message_length", mb),
+    ]
+    server = grpc.server(ThreadPoolExecutor(max_workers=_max_workers(settings)), options=options)
     pb_grpc.add_VectorStoreServicer_to_server(VectorStoreServicer(index, settings), server)
 
     # gRPC reflection (для grpcurl), если доступен модуль
@@ -34,13 +79,13 @@ def serve() -> None:
             reflection.SERVICE_NAME,
         )
         reflection.enable_server_reflection(service_names, server)
-    except Exception:
+    except Exception:  # noqa: BLE001
         pass
 
     addr = f"{settings.grpc_host}:{settings.grpc_port}"
     server.add_insecure_port(addr)
     server.start()
-    print(f"[elion-dal] gRPC слушает на {addr}")
+    logger.info("gRPC слушает на %s", addr)
     server.wait_for_termination()
 
 

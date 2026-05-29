@@ -10,9 +10,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # gRPC
+    # gRPC / сервер
     grpc_host: str = "0.0.0.0"
     grpc_port: int = 50051
+    grpc_max_workers: int = 8
+    grpc_max_message_mb: int = 32
+    # Ретраи подключения к Qdrant/Postgres на старте (backoff).
+    startup_retries: int = 10
+    startup_retry_delay_s: float = 3.0
+
+    # Логирование
+    log_level: str = "INFO"
 
     # Qdrant
     qdrant_url: str = "http://localhost:6333"
