@@ -30,6 +30,7 @@ services:
 
   elion-dal:
     build: .
+    restart: unless-stopped
     depends_on:
       qdrant:
         condition: service_healthy
@@ -40,11 +41,25 @@ services:
       GRPC_PORT: 50051
       QDRANT_URL: http://qdrant:6333
       PG_DSN: postgresql+psycopg://elion:elion@postgres:5432/elion
+      # На проде образ без torch -> бэкенд fastembed (e5-large, ONNX). flag/BGE-M3
+      # потребует тяжёлого образа с .[flag].
       EMBEDDING_BACKEND: fastembed
+      AUTO_MIGRATE: "true"
+      ADMIN_HOST: 0.0.0.0
+      ADMIN_PORT: "8080"
+      # Секреты подставляются платформой (Environment); пусто => auth выключен.
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      API_TOKEN: ${API_TOKEN:-}
     ports:
       - "50051:50051"   # gRPC
-      - "8080:8080"     # веб-админка
-    profiles: ["full"]   # `docker compose --profile full up` поднимет и сервис
+      - "8080:8080"     # веб-админка / health
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=3).status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 600s   # первый старт качает модель ~2 ГБ
 
 volumes:
   qdrant_storage:

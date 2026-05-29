@@ -160,3 +160,11 @@ def test_admin_open_when_no_password():
     # Пустой ADMIN_PASSWORD -> auth выключен (dev).
     c = TestClient(create_app(FakeIndex(), Settings(admin_password="")))
     assert c.get("/").status_code == 200
+
+
+def test_healthz_open_even_with_auth():
+    # /healthz доступен без креды даже при включённом Basic-auth (для проб платформы).
+    c = TestClient(create_app(FakeIndex(), Settings(admin_password="secret")))
+    r = c.get("/healthz")
+    assert r.status_code == 200
+    assert r.json()["status"] == "ok"

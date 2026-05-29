@@ -98,13 +98,18 @@ def _settings_form(views) -> str:
 
 
 def _basic_auth_dependency(settings):
-    """HTTP Basic из env (ADMIN_USER/ADMIN_PASSWORD). Применяется ко всем роутам."""
-    security = HTTPBasic()
+    """HTTP Basic из env (ADMIN_USER/ADMIN_PASSWORD). /healthz — открыт (для проб)."""
+    security = HTTPBasic(auto_error=False)
 
-    def check(creds: HTTPBasicCredentials = Depends(security)) -> None:
-        ok_user = secrets.compare_digest(creds.username, settings.admin_user)
-        ok_pass = secrets.compare_digest(creds.password, settings.admin_password)
-        if not (ok_user and ok_pass):
+    def check(request: Request, creds: HTTPBasicCredentials | None = Depends(security)) -> None:
+        if request.url.path == "/healthz":
+            return  # health-проба платформы без auth
+        ok = (
+            creds is not None
+            and secrets.compare_digest(creds.username, settings.admin_user)
+            and secrets.compare_digest(creds.password, settings.admin_password)
+        )
+        if not ok:
             raise HTTPException(
                 status_code=401,
                 detail="Unauthorized",
@@ -120,6 +125,11 @@ def create_app(index: IndexService, settings=None) -> FastAPI:
     if settings is not None and settings.admin_password:
         deps = [Depends(_basic_auth_dependency(settings))]
     app = FastAPI(title="Элион — DAL Admin", dependencies=deps)
+
+    @app.get("/healthz")
+    def healthz() -> dict:
+        # Без auth (исключение в зависимости) — для health-проб платформы.
+        return {"status": "ok"}
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard() -> str:
