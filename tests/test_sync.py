@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from elion_dal.chunking.chunker import Chunk
@@ -53,6 +55,7 @@ class FakePg:
                         url=p.url,
                         heading_path=p.heading_path,
                         text=p.text,
+                        published_ts=doc.published_ts,
                     )
         return out
 
@@ -88,8 +91,19 @@ class FakeQdrant:
     def search(self, embedding, limit, source_ids=(), min_published_ts=0):
         return self.search_hits[:limit]
 
+    def dense_scores(self, embedding, limit, source_ids=(), min_published_ts=0):
+        return getattr(self, "dense_map", {})
+
     def ping(self):
         return True
+
+
+class FakeReranker:
+    def __init__(self, scores_by_text):
+        self.scores_by_text = scores_by_text
+
+    def rerank(self, query, docs):
+        return [self.scores_by_text[d] for d in docs]
 
 
 class FakeProvider:
@@ -110,15 +124,23 @@ class FakeChunker:
         return [Chunk(index=i, text=p, token_count=len(p)) for i, p in enumerate(parts)]
 
 
-def make_service():
-    return IndexService(FakePg(), FakeQdrant(), FakeProvider(), FakeChunker(), parent_fanout=5)
+def make_service(reranker=None, recency_weight=0.0):
+    return IndexService(
+        FakePg(),
+        FakeQdrant(),
+        FakeProvider(),
+        FakeChunker(),
+        parent_fanout=5,
+        reranker=reranker,
+        recency_weight=recency_weight,
+    )
 
 
 def section(text, sid="0", url="u"):
     return SectionInput(section_id=sid, heading_path=[], url=url, text=text)
 
 
-def doc(text="a|b|c", h="h1", index=True, doc_id="d1", sections=None):
+def doc(text="a|b|c", h="h1", index=True, doc_id="d1", sections=None, published_ts=0):
     if sections is None:
         sections = [section(text)]
     return DocInput(
@@ -127,7 +149,7 @@ def doc(text="a|b|c", h="h1", index=True, doc_id="d1", sections=None):
         url="u",
         title="t",
         lang="ru",
-        published_ts=0,
+        published_ts=published_ts,
         content_hash=h,
         index_in_rag=index,
         sections=sections,
@@ -230,3 +252,63 @@ def test_search_collapses_children_to_parents():
     assert hits[0].score == 0.9
     assert hits[0].matched_child == "c"  # сниппет ребёнка-победителя
     assert hits[0].text == "c|d"  # текст родителя (вся секция)
+
+
+def test_dense_score_populated():
+    """B4: dense_score берётся из dense-only запроса по chunk_id matched-ребёнка."""
+    svc = make_service()
+    counts = UpsertCounts()
+    svc.process_document(doc(sections=[section("a|b", sid="1")], doc_id="d1"), counts)
+    svc.qdrant.dense_map = {"d1::1#0": 0.83}
+    svc.qdrant.search_hits = [
+        SearchHit(
+            chunk_id="d1::1#0", parent_id="d1::1", doc_id="d1", source_id="s1", text="a", score=0.5
+        )
+    ]
+    hits = svc.search("q", top_k=1, source_ids=[], min_published_ts=0)
+    assert abs(hits[0].dense_score - 0.83) < 1e-6
+
+
+def test_reranker_reorders_parents():
+    """B5: реранкер переупорядочивает схлопнутых родителей."""
+    rr = FakeReranker({"a|b": 0.9, "c|d": 0.1})
+    svc = make_service(reranker=rr)
+    counts = UpsertCounts()
+    svc.process_document(
+        doc(sections=[section("a|b", sid="1"), section("c|d", sid="2")], doc_id="d1"), counts
+    )
+    # RRF-порядок: сначала d1::2 ("c|d"), потом d1::1 ("a|b").
+    svc.qdrant.search_hits = [
+        SearchHit(
+            chunk_id="d1::2#0", parent_id="d1::2", doc_id="d1", source_id="s1", text="c", score=0.9
+        ),
+        SearchHit(
+            chunk_id="d1::1#0", parent_id="d1::1", doc_id="d1", source_id="s1", text="a", score=0.7
+        ),
+    ]
+    hits = svc.search("q", top_k=2, source_ids=[], min_published_ts=0)
+    # Реранкер выше оценил "a|b" (d1::1) -> он должен выйти первым.
+    assert [h.parent_id for h in hits] == ["d1::1", "d1::2"]
+
+
+def test_recency_boost_reorders():
+    """B6: свежий документ обгоняет старый при recency_weight>0."""
+    svc = make_service(recency_weight=1.0)
+    now = int(time.time())
+    counts = UpsertCounts()
+    svc.process_document(
+        doc(text="a", doc_id="dA", h="hA", published_ts=now - 5 * 365 * 86400), counts
+    )
+    svc.process_document(doc(text="b", doc_id="dB", h="hB", published_ts=now), counts)
+    # RRF: старый dA (0.6) выше свежего dB (0.5).
+    svc.qdrant.search_hits = [
+        SearchHit(
+            chunk_id="dA::0#0", parent_id="dA::0", doc_id="dA", source_id="s1", text="a", score=0.6
+        ),
+        SearchHit(
+            chunk_id="dB::0#0", parent_id="dB::0", doc_id="dB", source_id="s1", text="b", score=0.5
+        ),
+    ]
+    hits = svc.search("q", top_k=2, source_ids=[], min_published_ts=0)
+    # Свежесть домножает скор -> dB обгоняет dA.
+    assert [h.parent_id for h in hits] == ["dB::0", "dA::0"]

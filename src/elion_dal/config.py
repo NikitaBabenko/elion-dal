@@ -41,6 +41,14 @@ class Settings(BaseSettings):
     # Во сколько раз больше детей тянуть, чтобы схлопнуть в top_k уникальных родителей.
     search_parent_fanout: int = 5
 
+    # Реранкер (опционально; требует .[flag] и грузит модель ~600 МБ).
+    rerank_enabled: bool = False
+    rerank_model: str = "BAAI/bge-reranker-v2-m3"
+
+    # Приоритет свежести: множитель к скору по дате. 0 = выключено (поведение по умолчанию).
+    recency_weight: float = 0.0
+    recency_halflife_days: float = 365.0
+
 
 @lru_cache
 def get_settings() -> Settings:

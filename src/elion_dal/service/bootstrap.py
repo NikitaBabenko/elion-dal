@@ -31,6 +31,20 @@ def build_index_service(settings: Settings | None = None, ensure: bool = True) -
         chunk_overlap=settings.chunk_overlap,
         model_name=settings.chunk_tokenizer_model,
     )
+    reranker = None
+    if settings.rerank_enabled:
+        from ..embedding.reranker import FlagRerankerProvider
+
+        reranker = FlagRerankerProvider(settings.rerank_model)
     if ensure:
         qdrant.ensure_collection()
-    return IndexService(pg, qdrant, provider, chunker, parent_fanout=settings.search_parent_fanout)
+    return IndexService(
+        pg,
+        qdrant,
+        provider,
+        chunker,
+        parent_fanout=settings.search_parent_fanout,
+        reranker=reranker,
+        recency_weight=settings.recency_weight,
+        recency_halflife_days=settings.recency_halflife_days,
+    )

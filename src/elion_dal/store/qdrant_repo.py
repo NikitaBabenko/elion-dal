@@ -220,3 +220,28 @@ class QdrantRepo:
                 )
             )
         return hits
+
+    def dense_scores(
+        self,
+        query: Embedding,
+        limit: int,
+        source_ids: Sequence[str] = (),
+        min_published_ts: int = 0,
+    ) -> dict[str, float]:
+        """Только-dense поиск -> {chunk_id: cosine}. Нужен для confidence-сигнала
+        (RRF-fusion не отдаёт сырые косинусы)."""
+        qfilter = self._filter(source_ids, min_published_ts)
+        result = self.client.query_points(
+            collection_name=self.collection,
+            query=query.dense,
+            using=DENSE,
+            limit=limit,
+            with_payload=["chunk_id"],
+            query_filter=qfilter,
+        )
+        out: dict[str, float] = {}
+        for p in result.points:
+            cid = (p.payload or {}).get("chunk_id")
+            if cid:
+                out[str(cid)] = float(p.score)
+        return out

@@ -88,10 +88,16 @@ Qdrant-сервере + Postgres, embedded-режим — для dev/CI без D
 
 | RPC | Назначение |
 |---|---|
-| `UpsertDocuments(stream Document)` | индексация (чанкинг+эмбеддинг внутри, идемпотентно по хешу) |
-| `Search(SearchRequest)` | гибридный поиск (RRF) по детям → Топ-k родителей (секций) + matched_child + источники + скоры |
+| `UpsertDocuments(stream Document)` | индексация (чанкинг+эмбеддинг внутри, идемпотентно по хешу; изоляция ошибок по документу) |
+| `Search(SearchRequest)` | гибридный поиск (RRF) по детям → Топ-k родителей + `matched_child` + `dense_score` (confidence) |
 | `DeleteBySource(SourceRef)` | удалить источник из PG и Qdrant (переиндексация) |
+| `DeleteByDoc(DocRef)` | удалить один документ (страница исчезла из sitemap) |
+| `ListSources` / `GetStats` | админ-статистика: источники с датами синхронизации и объёмами |
 | `HealthCheck` | живость + доступность Qdrant/Postgres |
+
+**Ранжирование:** hybrid (RRF) → опциональный реранкер (`RERANK_ENABLED`, cross-encoder, default off)
+→ опциональный recency-boost (`RECENCY_WEIGHT`, приоритет свежих дат) → Топ-k. `dense_score` —
+сырой cosine лучшего ребёнка, сигнал уверенности для fallback на стороне RAG-ядра.
 
 Проверка через `grpcurl` (включена reflection):
 ```bash

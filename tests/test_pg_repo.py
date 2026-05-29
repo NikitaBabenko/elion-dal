@@ -82,3 +82,38 @@ def test_delete_by_source_cascades(tmp_path):
     assert docs == 1
     assert chunks == 2
     assert repo.get_parents(["d1::0"]) == {}  # каскад снёс родителей и детей
+
+
+def test_delete_by_doc(tmp_path):
+    repo = make_repo(tmp_path)
+    repo.ensure_source("s1")
+    repo.upsert_document(make_doc(), raw_text="секция")
+    repo.replace_parents_and_chunks("d1", [make_parent()])
+
+    docs, chunks = repo.delete_by_doc("d1")
+    assert docs == 1
+    assert chunks == 2
+    assert repo.get_parents(["d1::0"]) == {}
+    # Удаление несуществующего документа — без ошибок и нулевые счётчики.
+    assert repo.delete_by_doc("nope") == (0, 0)
+
+
+def test_list_sources_and_stats(tmp_path):
+    repo = make_repo(tmp_path)
+    repo.ensure_source("s1")
+    repo.upsert_document(make_doc(), raw_text="секция")
+    repo.replace_parents_and_chunks("d1", [make_parent()])  # 1 родитель, 2 ребёнка
+
+    sources = repo.list_sources()
+    assert len(sources) == 1
+    s = sources[0]
+    assert s.source_id == "s1"
+    assert s.document_count == 1
+    assert s.parent_count == 1
+    assert s.chunk_count == 2
+
+    stats = repo.get_stats()
+    assert stats.total_documents == 1
+    assert stats.total_parents == 1
+    assert stats.total_chunks == 2
+    assert len(stats.sources) == 1

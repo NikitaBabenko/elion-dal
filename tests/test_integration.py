@@ -72,6 +72,7 @@ def test_roundtrip(index):
     assert hits[0].source_id == "it_source"
     assert hits[0].parent_id == "it-bio-1::0"
     assert "олимпиад" in hits[0].text.lower()  # текст родителя
+    assert hits[0].dense_score > 0  # confidence-сигнал заполнен (B4)
 
     # очистка
     index.delete_source("it_source")

@@ -43,7 +43,7 @@ def main(argv: list[str]) -> int:
     print(f"Запрос: {args.query!r}\n")
     for i, h in enumerate(hits, 1):
         crumbs = " › ".join(h.heading_path) if h.heading_path else ""
-        print(f"#{i}  score={h.score:.4f}  source={h.source_id}")
+        print(f"#{i}  score={h.score:.4f}  dense={h.dense_score:.4f}  source={h.source_id}")
         print(f"    {h.title}  <{h.url}>")
         if crumbs:
             print(f"    раздел: {crumbs}")

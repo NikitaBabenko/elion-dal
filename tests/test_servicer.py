@@ -6,12 +6,14 @@ from elion_dal.config import Settings
 from elion_dal.grpc_gen import vectorstore_pb2 as pb
 from elion_dal.service.servicer import VectorStoreServicer
 from elion_dal.service.sync import ParentHit
+from elion_dal.store.pg_repo import SourceStats, StoreStats
 
 
 class FakeIndex:
     def __init__(self):
         self.docs = []
         self._hits = []
+        self.deleted_docs = []
 
     def process_document(self, doc, counts):
         self.docs.append(doc)
@@ -25,6 +27,16 @@ class FakeIndex:
 
     def search(self, query, top_k, source_ids, min_published_ts):
         return self._hits
+
+    def delete_doc(self, doc_id):
+        self.deleted_docs.append(doc_id)
+        return 1, 3
+
+    def list_sources(self):
+        return [SourceStats("s1", "Источник 1", 1700000000, 2, 4, 9)]
+
+    def get_stats(self):
+        return StoreStats(2, 4, 9, self.list_sources())
 
 
 def make_servicer():
@@ -63,8 +75,16 @@ def test_search_maps_parent_hits():
     svc.index.set_hits(
         [
             ParentHit(
-                parent_id="d1::0", doc_id="d1", source_id="s1", title="t", url="u",
-                heading_path=["A"], text="родитель", matched_child="ребёнок", score=0.42,
+                parent_id="d1::0",
+                doc_id="d1",
+                source_id="s1",
+                title="t",
+                url="u",
+                heading_path=["A"],
+                text="родитель",
+                matched_child="ребёнок",
+                score=0.42,
+                dense_score=0.77,
             )
         ]
     )
@@ -76,6 +96,35 @@ def test_search_maps_parent_hits():
     assert h.text == "родитель"
     assert h.matched_child == "ребёнок"
     assert abs(h.score - 0.42) < 1e-6
+    assert abs(h.dense_score - 0.77) < 1e-6
+
+
+def test_delete_by_doc():
+    svc = make_servicer()
+    resp = svc.DeleteByDoc(pb.DocRef(doc_id="d1"), None)
+    assert svc.index.deleted_docs == ["d1"]
+    assert resp.documents_deleted == 1
+    assert resp.chunks_deleted == 3
+
+
+def test_list_sources():
+    svc = make_servicer()
+    resp = svc.ListSources(pb.StatsRequest(), None)
+    assert len(resp.sources) == 1
+    s = resp.sources[0]
+    assert s.source_id == "s1"
+    assert s.document_count == 2
+    assert s.chunk_count == 9
+    assert s.last_indexed_ts == 1700000000
+
+
+def test_get_stats():
+    svc = make_servicer()
+    resp = svc.GetStats(pb.StatsRequest(), None)
+    assert resp.total_documents == 2
+    assert resp.total_parents == 4
+    assert resp.total_chunks == 9
+    assert len(resp.sources) == 1
 
 
 def test_search_uses_config_top_k_when_zero():

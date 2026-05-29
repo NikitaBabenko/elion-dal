@@ -19,6 +19,13 @@ service VectorStore {
   // Удалить все документы/чанки источника из PG и Qdrant (переиндексация).
   rpc DeleteBySource(SourceRef) returns (DeleteResult);
 
+  // Удалить один документ (например, страница исчезла из sitemap).
+  rpc DeleteByDoc(DocRef) returns (DeleteResult);
+
+  // Админ-статистика: источники с датами синхронизации и объёмами.
+  rpc ListSources(StatsRequest) returns (SourceList);
+  rpc GetStats(StatsRequest) returns (Stats);
+
   // Проверка живости + доступности зависимостей.
   rpc HealthCheck(HealthRequest) returns (HealthStatus);
 }
@@ -73,7 +80,8 @@ message Hit {
   repeated string heading_path = 6; // хлебные крошки секции
   string text = 7;                  // ТЕКСТ РОДИТЕЛЯ (для генерации в RAG-ядре)
   string matched_child = 8;         // сниппет ребёнка, который сматчился («почему нашли»)
-  float score = 9;                  // итоговый RRF-скор лучшего ребёнка
+  float score = 9;                  // итоговый скор ранжирования (RRF/реранкер × recency)
+  float dense_score = 10;           // raw cosine лучшего ребёнка — сигнал уверенности для fallback
 }
 
 message SearchResponse {
@@ -84,9 +92,35 @@ message SourceRef {
   string source_id = 1;
 }
 
+message DocRef {
+  string doc_id = 1;
+}
+
 message DeleteResult {
   uint32 documents_deleted = 1;
   uint32 chunks_deleted = 2;
+}
+
+message StatsRequest {}
+
+message SourceInfo {
+  string source_id = 1;
+  string name = 2;
+  int64 last_indexed_ts = 3;   // unix-время последней синхронизации (0 — не было)
+  uint32 document_count = 4;
+  uint32 parent_count = 5;
+  uint32 chunk_count = 6;
+}
+
+message SourceList {
+  repeated SourceInfo sources = 1;
+}
+
+message Stats {
+  uint32 total_documents = 1;
+  uint32 total_parents = 2;
+  uint32 total_chunks = 3;
+  repeated SourceInfo sources = 4;
 }
 
 message HealthRequest {}

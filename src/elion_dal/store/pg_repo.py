@@ -68,6 +68,25 @@ class ParentRecord:
     url: str
     heading_path: list[str]
     text: str
+    published_ts: int = 0
+
+
+@dataclass(slots=True)
+class SourceStats:
+    source_id: str
+    name: str
+    last_indexed_ts: int
+    document_count: int
+    parent_count: int
+    chunk_count: int
+
+
+@dataclass(slots=True)
+class StoreStats:
+    total_documents: int
+    total_parents: int
+    total_chunks: int
+    sources: list[SourceStats]
 
 
 class PgRepo:
@@ -182,12 +201,12 @@ class PgRepo:
             return {}
         with self._sm() as s:
             rows = s.execute(
-                select(Parent, Document.source_id, Document.title)
+                select(Parent, Document.source_id, Document.title, Document.published_ts)
                 .join(Document, Document.doc_id == Parent.doc_id)
                 .where(Parent.parent_id.in_(list(parent_ids)))
             ).all()
         result: dict[str, ParentRecord] = {}
-        for parent, source_id, title in rows:
+        for parent, source_id, title, published_ts in rows:
             result[parent.parent_id] = ParentRecord(
                 parent_id=parent.parent_id,
                 doc_id=parent.doc_id,
@@ -196,6 +215,7 @@ class PgRepo:
                 url=parent.url,
                 heading_path=list(parent.heading_path or []),
                 text=parent.text,
+                published_ts=int(published_ts or 0),
             )
         return result
 
@@ -221,3 +241,60 @@ class PgRepo:
             # ON DELETE CASCADE снесёт родителей и детей вместе с документами.
             s.execute(delete(Document).where(Document.source_id == source_id))
             return len(doc_ids), int(chunks_n)
+
+    def delete_by_doc(self, doc_id: str) -> tuple[int, int]:
+        """Удалить один документ (с родителями и детьми). Возвращает (docs, chunks)."""
+        with self._sm.begin() as s:
+            exists = s.get(Document, doc_id) is not None
+            chunks_n = s.execute(
+                select(func.count()).select_from(Chunk).where(Chunk.doc_id == doc_id)
+            ).scalar_one()
+            s.execute(delete(Document).where(Document.doc_id == doc_id))
+            return (1 if exists else 0), int(chunks_n)
+
+    def list_sources(self) -> list[SourceStats]:
+        with self._sm() as s:
+            sources = list(s.execute(select(Source)).scalars())
+            doc_counts = dict(
+                s.execute(
+                    select(Document.source_id, func.count()).group_by(Document.source_id)
+                ).all()
+            )
+            parent_counts = dict(
+                s.execute(
+                    select(Document.source_id, func.count())
+                    .select_from(Parent)
+                    .join(Document, Document.doc_id == Parent.doc_id)
+                    .group_by(Document.source_id)
+                ).all()
+            )
+            chunk_counts = dict(
+                s.execute(
+                    select(Document.source_id, func.count())
+                    .select_from(Chunk)
+                    .join(Document, Document.doc_id == Chunk.doc_id)
+                    .group_by(Document.source_id)
+                ).all()
+            )
+        result: list[SourceStats] = []
+        for src in sources:
+            ts = int(src.last_indexed_at.timestamp()) if src.last_indexed_at else 0
+            result.append(
+                SourceStats(
+                    source_id=src.source_id,
+                    name=src.name or src.source_id,
+                    last_indexed_ts=ts,
+                    document_count=int(doc_counts.get(src.source_id, 0)),
+                    parent_count=int(parent_counts.get(src.source_id, 0)),
+                    chunk_count=int(chunk_counts.get(src.source_id, 0)),
+                )
+            )
+        return result
+
+    def get_stats(self) -> StoreStats:
+        sources = self.list_sources()
+        with self._sm() as s:
+            td = s.execute(select(func.count()).select_from(Document)).scalar_one()
+            tp = s.execute(select(func.count()).select_from(Parent)).scalar_one()
+            tc = s.execute(select(func.count()).select_from(Chunk)).scalar_one()
+        return StoreStats(int(td), int(tp), int(tc), sources)

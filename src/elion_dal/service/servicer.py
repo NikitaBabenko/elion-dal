@@ -7,10 +7,21 @@ import logging
 from ..config import Settings
 from ..grpc_gen import vectorstore_pb2 as pb
 from ..grpc_gen import vectorstore_pb2_grpc as pb_grpc
-from ..store.pg_repo import DocInput, SectionInput
+from ..store.pg_repo import DocInput, SectionInput, SourceStats
 from .sync import IndexService, UpsertCounts
 
 logger = logging.getLogger(__name__)
+
+
+def _source_to_pb(s: SourceStats) -> pb.SourceInfo:
+    return pb.SourceInfo(
+        source_id=s.source_id,
+        name=s.name,
+        last_indexed_ts=s.last_indexed_ts,
+        document_count=s.document_count,
+        parent_count=s.parent_count,
+        chunk_count=s.chunk_count,
+    )
 
 
 class VectorStoreServicer(pb_grpc.VectorStoreServicer):
@@ -83,6 +94,7 @@ class VectorStoreServicer(pb_grpc.VectorStoreServicer):
                     text=h.text,
                     matched_child=h.matched_child,
                     score=h.score,
+                    dense_score=h.dense_score,
                 )
                 for h in hits
             ]
@@ -91,6 +103,22 @@ class VectorStoreServicer(pb_grpc.VectorStoreServicer):
     def DeleteBySource(self, request, context) -> pb.DeleteResult:
         docs, chunks = self.index.delete_source(request.source_id)
         return pb.DeleteResult(documents_deleted=docs, chunks_deleted=chunks)
+
+    def DeleteByDoc(self, request, context) -> pb.DeleteResult:
+        docs, chunks = self.index.delete_doc(request.doc_id)
+        return pb.DeleteResult(documents_deleted=docs, chunks_deleted=chunks)
+
+    def ListSources(self, request, context) -> pb.SourceList:
+        return pb.SourceList(sources=[_source_to_pb(s) for s in self.index.list_sources()])
+
+    def GetStats(self, request, context) -> pb.Stats:
+        st = self.index.get_stats()
+        return pb.Stats(
+            total_documents=st.total_documents,
+            total_parents=st.total_parents,
+            total_chunks=st.total_chunks,
+            sources=[_source_to_pb(s) for s in st.sources],
+        )
 
     def HealthCheck(self, request, context) -> pb.HealthStatus:
         h = self.index.health()

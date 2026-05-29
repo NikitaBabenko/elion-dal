@@ -6,12 +6,14 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 from ..chunking.chunker import Chunker
 from ..embedding.base import EmbeddingProvider
+from ..embedding.reranker import Reranker
 from ..store.models import chunk_id, parent_pk
-from ..store.pg_repo import DocInput, ParentBuild, PgRepo, sha256
+from ..store.pg_repo import DocInput, ParentBuild, PgRepo, SourceStats, StoreStats, sha256
 from ..store.qdrant_repo import PointInput, QdrantRepo
 
 
@@ -37,6 +39,7 @@ class ParentHit:
     text: str = ""
     matched_child: str = ""
     score: float = 0.0
+    dense_score: float = 0.0  # raw cosine лучшего ребёнка — сигнал уверенности
 
 
 class IndexService:
@@ -47,6 +50,9 @@ class IndexService:
         provider: EmbeddingProvider,
         chunker: Chunker,
         parent_fanout: int = 5,
+        reranker: Reranker | None = None,
+        recency_weight: float = 0.0,
+        recency_halflife_days: float = 365.0,
     ) -> None:
         self.pg = pg
         self.qdrant = qdrant
@@ -54,6 +60,18 @@ class IndexService:
         self.chunker = chunker
         # Во сколько раз больше детей тянуть, чтобы схлопнуть в top_k уникальных родителей.
         self.parent_fanout = max(1, parent_fanout)
+        self.reranker = reranker
+        self.recency_weight = recency_weight
+        self.recency_halflife_days = max(1.0, recency_halflife_days)
+
+    def _recency_mult(self, published_ts: int) -> float:
+        """Множитель к скору по свежести: до (1 + weight) для свежего, ~1 для старого.
+        published_ts=0 (дата неизвестна) -> 1.0 (без штрафа/буста)."""
+        if self.recency_weight <= 0 or published_ts <= 0:
+            return 1.0
+        age_days = max(0.0, (time.time() - published_ts) / 86400.0)
+        decay = 0.5 ** (age_days / self.recency_halflife_days)  # (0, 1]
+        return 1.0 + self.recency_weight * decay
 
     def process_document(self, doc: DocInput, counts: UpsertCounts) -> None:
         counts.received += 1
@@ -141,31 +159,34 @@ class IndexService:
         self, query: str, top_k: int, source_ids: list[str], min_published_ts: int
     ) -> list[ParentHit]:
         embedding = self.provider.embed_query(query)
+        limit = top_k * self.parent_fanout
         child_hits = self.qdrant.search(
-            embedding,
-            limit=top_k * self.parent_fanout,
-            source_ids=source_ids,
-            min_published_ts=min_published_ts,
+            embedding, limit=limit, source_ids=source_ids, min_published_ts=min_published_ts
         )
 
-        # Схлопываем детей в уникальных родителей, сохраняя порядок (RRF уже отсортировал).
-        ordered_parent_ids: list[str] = []
-        best: dict[str, tuple[float, str]] = {}  # parent_id -> (score, matched_child_text)
+        # Схлопываем детей в уникальных родителей-кандидатов (порядок RRF сохраняем).
+        ordered: list[str] = []
+        best: dict[str, tuple[float, str, str]] = {}  # pid -> (rrf, child_text, child_chunk_id)
         for h in child_hits:
             if h.parent_id not in best:
-                ordered_parent_ids.append(h.parent_id)
-                best[h.parent_id] = (h.score, h.text)
-            if len(ordered_parent_ids) >= top_k:
-                break
+                ordered.append(h.parent_id)
+                best[h.parent_id] = (h.score, h.text, h.chunk_id)
+        if not ordered:
+            return []
 
-        records = self.pg.get_parents(ordered_parent_ids)
-        results: list[ParentHit] = []
-        for pid in ordered_parent_ids:
+        # Confidence: сырые dense-косинусы по chunk_id (RRF их не отдаёт).
+        dense_map = self.qdrant.dense_scores(
+            embedding, limit=limit, source_ids=source_ids, min_published_ts=min_published_ts
+        )
+
+        records = self.pg.get_parents(ordered)
+        candidates: list[ParentHit] = []
+        for pid in ordered:
             rec = records.get(pid)
             if rec is None:
                 continue
-            score, matched_child = best[pid]
-            results.append(
+            rrf, child_text, child_chunk_id = best[pid]
+            candidates.append(
                 ParentHit(
                     parent_id=rec.parent_id,
                     doc_id=rec.doc_id,
@@ -174,16 +195,42 @@ class IndexService:
                     url=rec.url,
                     heading_path=rec.heading_path,
                     text=rec.text,
-                    matched_child=matched_child,
-                    score=score,
+                    matched_child=child_text,
+                    score=rrf,
+                    dense_score=dense_map.get(child_chunk_id, 0.0),
                 )
             )
-        return results
+
+        # Ранжирование: hybrid (RRF) -> опц. реранкер -> опц. recency -> top_k.
+        rescored = False
+        if self.reranker is not None:
+            scores = self.reranker.rerank(query, [c.text for c in candidates])
+            for c, s in zip(candidates, scores, strict=True):
+                c.score = s
+            rescored = True
+        if self.recency_weight > 0:
+            for c in candidates:
+                c.score *= self._recency_mult(records[c.parent_id].published_ts)
+            rescored = True
+        if rescored:
+            candidates.sort(key=lambda c: c.score, reverse=True)
+        return candidates[:top_k]
 
     def delete_source(self, source_id: str) -> tuple[int, int]:
         docs, chunks = self.pg.delete_by_source(source_id)
         self.qdrant.delete_by_source(source_id)
         return docs, chunks
+
+    def delete_doc(self, doc_id: str) -> tuple[int, int]:
+        docs, chunks = self.pg.delete_by_doc(doc_id)
+        self.qdrant.delete_by_doc(doc_id)
+        return docs, chunks
+
+    def list_sources(self) -> list[SourceStats]:
+        return self.pg.list_sources()
+
+    def get_stats(self) -> StoreStats:
+        return self.pg.get_stats()
 
     def health(self) -> dict:
         qok = self.qdrant.ping()
