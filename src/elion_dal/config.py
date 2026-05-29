@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     admin_enabled: bool = True
     admin_host: str = "0.0.0.0"
     admin_port: int = 8080
+    # Basic-auth админки: логин/пароль из env. Пустой пароль => auth выключен (dev).
+    admin_user: str = "admin"
+    admin_password: str = ""
+
+    # Фиксированный токен доступа к gRPC API (ручкам). Пусто => проверка выключена.
+    # Может переопределяться в админке (app_settings.api_token), env — бутстрап/фолбэк.
+    api_token: str = ""
 
     # Qdrant
     qdrant_url: str = "http://localhost:6333"

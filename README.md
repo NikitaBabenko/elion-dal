@@ -137,6 +137,15 @@ grpcurl -plaintext -d '{"query":"налоговый вычет","top_k":3}' \
 
 Отключается `ADMIN_ENABLED=false`.
 
+## Доступ / безопасность
+
+- **Админка** — HTTP Basic из env: `ADMIN_USER` / `ADMIN_PASSWORD`. Пустой пароль =
+  auth выключен (только dev).
+- **gRPC API (ручки)** — фиксированный токен: клиент передаёт его в metadata
+  (`authorization: Bearer <token>` или `x-api-token: <token>`). Источник токена:
+  `app_settings.api_token` (редактируется в админке) с фолбэком на env `API_TOKEN`.
+  Пусто => проверка выключена. `HealthCheck` всегда открыт (для проб платформы).
+
 ## Тесты
 
 ```bash

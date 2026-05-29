@@ -11,13 +11,15 @@ from __future__ import annotations
 # ruff: noqa: E501, B008
 import hashlib
 import html
+import secrets
 import tempfile
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from ..ingestion.loaders import load_document
 from ..service.sync import IndexService, UpsertCounts
@@ -95,8 +97,29 @@ def _settings_form(views) -> str:
     )
 
 
-def create_app(index: IndexService) -> FastAPI:
-    app = FastAPI(title="Элион — DAL Admin")
+def _basic_auth_dependency(settings):
+    """HTTP Basic из env (ADMIN_USER/ADMIN_PASSWORD). Применяется ко всем роутам."""
+    security = HTTPBasic()
+
+    def check(creds: HTTPBasicCredentials = Depends(security)) -> None:
+        ok_user = secrets.compare_digest(creds.username, settings.admin_user)
+        ok_pass = secrets.compare_digest(creds.password, settings.admin_password)
+        if not (ok_user and ok_pass):
+            raise HTTPException(
+                status_code=401,
+                detail="Unauthorized",
+                headers={"WWW-Authenticate": "Basic"},
+            )
+
+    return check
+
+
+def create_app(index: IndexService, settings=None) -> FastAPI:
+    # Basic-auth включается, только если задан пароль (иначе dev-режим без auth).
+    deps = []
+    if settings is not None and settings.admin_password:
+        deps = [Depends(_basic_auth_dependency(settings))]
+    app = FastAPI(title="Элион — DAL Admin", dependencies=deps)
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard() -> str:

@@ -5,10 +5,13 @@ from __future__ import annotations
 import logging
 import time
 
+import grpc
+
 from ..config import Settings
 from ..grpc_gen import vectorstore_pb2 as pb
 from ..grpc_gen import vectorstore_pb2_grpc as pb_grpc
 from ..store.pg_repo import DocInput, SectionInput, SourceStats
+from .auth import token_ok
 from .sync import IndexService, UpsertCounts
 
 logger = logging.getLogger(__name__)
@@ -30,7 +33,24 @@ class VectorStoreServicer(pb_grpc.VectorStoreServicer):
         self.index = index
         self.settings = settings
 
+    def _effective_token(self) -> str:
+        store = getattr(self.index, "settings_store", None)
+        if store is not None:
+            tok = store.get("api_token")
+            if tok:
+                return str(tok)
+        return getattr(self.settings, "api_token", "") or ""
+
+    def _authorize(self, context) -> None:
+        """Проверка API-токена. HealthCheck её не вызывает (открыт для проб)."""
+        expected = self._effective_token()
+        if not expected:
+            return  # токен не настроен -> проверка выключена
+        if not token_ok(context.invocation_metadata(), expected):
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid or missing API token")
+
     def UpsertDocuments(self, request_iterator, context) -> pb.UpsertResult:
+        self._authorize(context)
         counts = UpsertCounts()
         for d in request_iterator:
             sections = [
@@ -76,6 +96,7 @@ class VectorStoreServicer(pb_grpc.VectorStoreServicer):
         )
 
     def Search(self, request, context) -> pb.SearchResponse:
+        self._authorize(context)
         top_k = request.top_k or self.settings.search_top_k
         t0 = time.perf_counter()
         hits = self.index.search(
@@ -112,17 +133,21 @@ class VectorStoreServicer(pb_grpc.VectorStoreServicer):
         )
 
     def DeleteBySource(self, request, context) -> pb.DeleteResult:
+        self._authorize(context)
         docs, chunks = self.index.delete_source(request.source_id)
         return pb.DeleteResult(documents_deleted=docs, chunks_deleted=chunks)
 
     def DeleteByDoc(self, request, context) -> pb.DeleteResult:
+        self._authorize(context)
         docs, chunks = self.index.delete_doc(request.doc_id)
         return pb.DeleteResult(documents_deleted=docs, chunks_deleted=chunks)
 
     def ListSources(self, request, context) -> pb.SourceList:
+        self._authorize(context)
         return pb.SourceList(sources=[_source_to_pb(s) for s in self.index.list_sources()])
 
     def GetStats(self, request, context) -> pb.Stats:
+        self._authorize(context)
         st = self.index.get_stats()
         return pb.Stats(
             total_documents=st.total_documents,

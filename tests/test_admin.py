@@ -7,6 +7,7 @@ import io
 from fastapi.testclient import TestClient
 
 from elion_dal.admin.web import create_app
+from elion_dal.config import Settings
 from elion_dal.service.sync import ParentHit
 from elion_dal.store.pg_repo import SourceStats, StoreStats
 from elion_dal.store.settings_store import SettingView
@@ -145,3 +146,17 @@ def test_upload_indexes_docx():
     doc = app_index.uploaded[0]
     assert doc.source_id == "knowledge_base"
     assert "Правила приёма" in doc.sections[0].text
+
+
+def test_admin_basic_auth_enforced_when_password_set():
+    app = create_app(FakeIndex(), Settings(admin_user="admin", admin_password="secret"))
+    c = TestClient(app)
+    assert c.get("/").status_code == 401  # без креды
+    assert c.get("/", auth=("admin", "wrong")).status_code == 401  # неверный пароль
+    assert c.get("/", auth=("admin", "secret")).status_code == 200  # верные креды
+
+
+def test_admin_open_when_no_password():
+    # Пустой ADMIN_PASSWORD -> auth выключен (dev).
+    c = TestClient(create_app(FakeIndex(), Settings(admin_password="")))
+    assert c.get("/").status_code == 200

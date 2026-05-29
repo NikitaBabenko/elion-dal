@@ -65,6 +65,9 @@ def serve() -> None:
     )
     _wait_for_backends(index, settings)
 
+    token_on = bool(index.settings_store.get("api_token") or settings.api_token)
+    logger.info("gRPC API-токен: %s", "включён" if token_on else "ВЫКЛ (ручки открыты)")
+
     mb = settings.grpc_max_message_mb * 1024 * 1024
     options = [
         ("grpc.max_send_message_length", mb),
@@ -96,9 +99,12 @@ def serve() -> None:
 
         from ..admin.web import create_app
 
-        logger.info("Admin UI на http://%s:%d", settings.admin_host, settings.admin_port)
+        admin_auth = "basic-auth" if settings.admin_password else "БЕЗ auth (dev)"
+        logger.info(
+            "Admin UI на http://%s:%d (%s)", settings.admin_host, settings.admin_port, admin_auth
+        )
         uvicorn.run(
-            create_app(index),
+            create_app(index, settings),
             host=settings.admin_host,
             port=settings.admin_port,
             log_level=settings.log_level.lower(),

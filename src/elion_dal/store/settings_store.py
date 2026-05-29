@@ -37,6 +37,7 @@ FIELDS: list[Field] = [
     Field("embedding_backend", "str", "restart", "Бэкенд эмбеддингов (fastembed|flag)"),
     Field("embedding_model", "str", "restart", "Модель эмбеддингов (пусто = дефолт)"),
     Field("embedding_quantize", "bool", "restart", "int8-квантизация модели"),
+    Field("api_token", "str", "live", "Токен доступа к gRPC API (ручкам)"),
 ]
 FIELD_BY_KEY: dict[str, Field] = {f.key: f for f in FIELDS}
 
