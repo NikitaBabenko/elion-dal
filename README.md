@@ -136,23 +136,26 @@ grpcurl -plaintext -d '{"query":"налоговый вычет","top_k":3}' \
 
 OpenAPI/Swagger: `/docs` (FastAPI отдаёт автоматом).
 
-## Веб-админка (локальная, отдельный процесс)
+## Веб-админка
 
-Админка — **отдельный процесс на машине администратора**, HTTP-клиент к REST API.
-На проде в контейнере не запускается.
+Админка живёт **в том же процессе, что и REST API**, монтируется на **`/admin/`**.
+Внутри неё клиент = сам `IndexService` (без внутренних HTTP-хопов). Защищена
+HTTP Basic из env (`ADMIN_USER`/`ADMIN_PASSWORD`); пустой пароль — auth выключен.
 
+- `https://<domain>/`         → 404 (нет ничего в корне)
+- `https://<domain>/healthz`   → health (открыт)
+- `https://<domain>/docs`      → Swagger REST API
+- `https://<domain>/api/v1/*`  → REST (Bearer-токен)
+- `https://<domain>/admin/`    → веб-админка (Basic)
+
+**Альтернативно — standalone-режим** (админка как отдельный процесс, ходит к
+удалённому серверу по HTTP):
 ```bash
-pip install -e ".[dev]"     # fastapi/uvicorn/httpx уже в core
-API_BASE_URL=https://elion-dal.vibenest.net \
-  API_TOKEN=<token> \
-  ADMIN_PASSWORD=<пусто или secret> \
-  python -m elion_dal.admin.web
+API_BASE_URL=https://elion-dal.vibenest.net API_TOKEN=<token> \
+  ADMIN_PASSWORD=<пусто или secret> python -m elion_dal.admin.web
 # UI: http://localhost:8080
 ```
-
-Возможности — те же: дашборд (`/api/v1/stats`+`/sources`), поиск с `dense_score`,
-удаление, загрузка PDF/DOCX (парсится локально, отправляется через
-`POST /api/v1/documents`), редактирование настроек.
+Используется, если хочется управлять с другой машины без публичного админ-URL.
 
 ## Доступ / безопасность
 

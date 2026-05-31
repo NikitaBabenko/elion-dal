@@ -51,7 +51,7 @@ _SCRIPT = """
 async function doSearch(e){
   e.preventDefault();
   const q=document.getElementById('q').value, k=document.getElementById('k').value;
-  const r=await fetch('/api/search',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+  const r=await fetch('api/search',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
     body:`query=${encodeURIComponent(q)}&top_k=${k}`});
   const data=await r.json(); const box=document.getElementById('results'); box.innerHTML='';
   if(!data.length){box.innerHTML='<p class=muted>Ничего не найдено (no-hit).</p>';return;}
@@ -94,7 +94,7 @@ def _settings_form(views) -> str:
     if not rows:
         return ""
     return (
-        "<h2>Настройки</h2><form method=post action='/settings'>"
+        "<h2>Настройки</h2><form method=post action='settings'>"
         "<table>" + rows + "</table>"
         "<button>Сохранить</button> "
         "<span class=muted>live применяются сразу; restart — после перезапуска сервиса</span>"
@@ -145,7 +145,7 @@ def create_app(client, settings=None) -> FastAPI:
                 f"<tr><td>{html.escape(s.source_id)}</td><td>{html.escape(s.name)}</td>"
                 f"<td>{s.document_count}</td><td>{s.parent_count}</td><td>{s.chunk_count}</td>"
                 f"<td>{_fmt_ts(s.last_indexed_ts)}</td>"
-                f"<td><form method=post action='/sources/{html.escape(s.source_id)}/delete' "
+                f"<td><form method=post action='sources/{html.escape(s.source_id)}/delete' "
                 f"onsubmit=\"return confirm('Удалить источник {html.escape(s.source_id)}?')\">"
                 f"<button>Удалить</button></form></td></tr>"
             )
@@ -159,7 +159,7 @@ def create_app(client, settings=None) -> FastAPI:
         <table><tr><th>source_id</th><th>имя</th><th>док.</th><th>род.</th><th>чанки</th>
           <th>синхронизация</th><th></th></tr>{rows or "<tr><td colspan=7 class=muted>пусто</td></tr>"}</table>
         <h2>Загрузить документ</h2>
-        <form method=post action='/upload' enctype='multipart/form-data'>
+        <form method=post action='upload' enctype='multipart/form-data'>
           <input type=file name=file required>
           <input type=text name=source_id value='knowledge_base' title='source_id'>
           <button>Загрузить и проиндексировать</button>
@@ -188,7 +188,7 @@ def create_app(client, settings=None) -> FastAPI:
                 if val is not None and str(val) != "":
                     items[f.key] = str(val)
         client.update_settings(items)
-        return RedirectResponse("/", status_code=303)
+        return RedirectResponse(str(request.url_for("dashboard")), status_code=303)
 
     @app.get("/api/stats")
     def api_stats() -> dict:
@@ -219,18 +219,22 @@ def create_app(client, settings=None) -> FastAPI:
             for h in hits
         ]
 
+    def _dashboard_url(request: Request) -> str:
+        # request.url_for учитывает mount-префикс (/admin/), не ломаясь при разном размещении.
+        return str(request.url_for("dashboard"))
+
     @app.post("/sources/{source_id}/delete")
-    def delete_source(source_id: str) -> RedirectResponse:
+    def delete_source(source_id: str, request: Request) -> RedirectResponse:
         client.delete_source(source_id)
-        return RedirectResponse("/", status_code=303)
+        return RedirectResponse(_dashboard_url(request), status_code=303)
 
     @app.post("/docs/{doc_id}/delete")
-    def delete_doc(doc_id: str) -> RedirectResponse:
+    def delete_doc(doc_id: str, request: Request) -> RedirectResponse:
         client.delete_doc(doc_id)
-        return RedirectResponse("/", status_code=303)
+        return RedirectResponse(_dashboard_url(request), status_code=303)
 
     @app.post("/upload")
-    def upload(file: UploadFile = File(...), source_id: str = Form("knowledge_base")):
+    def upload(request: Request, file: UploadFile = File(...), source_id: str = Form("knowledge_base")):
         data = file.file.read()
         suffix = Path(file.filename or "f").suffix
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -255,7 +259,7 @@ def create_app(client, settings=None) -> FastAPI:
             sections=[SectionInput(section_id="0", heading_path=[], url=url, text=text)],
         )
         client.process_document(doc, UpsertCounts())
-        return RedirectResponse("/", status_code=303)
+        return RedirectResponse(_dashboard_url(request), status_code=303)
 
     return app
 

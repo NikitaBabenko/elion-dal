@@ -147,3 +147,27 @@ def test_get_and_update_settings():
     r = c.post("/api/v1/settings", json={"items": {"search_parent_fanout": "9"}})
     assert r.status_code == 200
     assert r.json()["fields"]  # снова отдаёт список
+
+
+def test_admin_mounted_on_main_app():
+    """Главный app = REST API + /admin/ — основная конфигурация деплоя."""
+    from elion_dal.admin.web import create_app as create_admin_app
+
+    idx = FakeIndex()
+    app = create_api(idx, Settings())
+    app.mount("/admin", create_admin_app(idx, Settings()))
+    c = TestClient(app)
+
+    # /healthz и REST в корне работают
+    assert c.get("/healthz").status_code == 200
+    assert c.get("/api/v1/stats").status_code == 200
+
+    # Админка отдаёт HTML под /admin/
+    r = c.get("/admin/")
+    assert r.status_code == 200
+    assert "DAL Admin" in r.text
+    # Формы используют относительные пути -> чтобы редиректы и POST-ы работали под mount
+    assert "action='sources/" in r.text
+    assert "action='upload'" in r.text
+    assert "action='settings'" in r.text
+    assert "fetch('api/search'" in r.text

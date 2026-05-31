@@ -20,6 +20,7 @@ import uvicorn
 # from ..grpc_gen import vectorstore_pb2 as pb
 # from ..grpc_gen import vectorstore_pb2_grpc as pb_grpc
 # from .servicer import VectorStoreServicer
+from ..admin.web import create_app as create_admin_app
 from ..config import Settings, get_settings
 from ..logging_setup import setup_logging
 from .bootstrap import build_index_service
@@ -87,7 +88,17 @@ def serve() -> None:
     # logger.info("gRPC слушает на %s:%d", settings.grpc_host, settings.grpc_port)
 
     app = create_api(index, settings)
-    logger.info("REST API на http://%s:%d", settings.admin_host, settings.admin_port)
+    # Админ-UI монтируем на /admin/ — внутри неё клиент = сам IndexService
+    # (никаких внутренних HTTP-хопов). Basic-auth админки берётся из ADMIN_PASSWORD.
+    admin_app = create_admin_app(index, settings)
+    app.mount("/admin", admin_app)
+    admin_auth = "basic-auth" if settings.admin_password else "БЕЗ auth (dev)"
+    logger.info(
+        "REST API на http://%s:%d  (Admin UI: /admin/, %s)",
+        settings.admin_host,
+        settings.admin_port,
+        admin_auth,
+    )
     uvicorn.run(
         app,
         host=settings.admin_host,
