@@ -1,27 +1,29 @@
-"""Точка входа gRPC-сервера VectorStore.
+"""Точка входа сервера VectorStore — REST API (FastAPI) + healthz.
 
 Запуск:  python -m elion_dal.service.server
 
-На проде поднимается только gRPC + крошечный stdlib HTTP /healthz (для health-проб
-платформы). Админка отдельным процессом-клиентом — см. `elion_dal.admin.web`.
+Сейчас публичный контракт — REST (HTTPS-прокси платформы пропускает HTTP, но не
+gRPC). Код gRPC сохранён (proto + servicer + клиент-стаб) — может быть переключён
+обратно, когда платформа научится проксировать gRPC (см. ADR-006).
 """
 
 from __future__ import annotations
 
 import logging
-import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
-from http.server import BaseHTTPRequestHandler, HTTPServer
 
-import grpc
+import uvicorn
 
+# --- gRPC (временно отключён, см. ADR-006) ---
+# from concurrent.futures import ThreadPoolExecutor
+# import grpc
+# from ..grpc_gen import vectorstore_pb2 as pb
+# from ..grpc_gen import vectorstore_pb2_grpc as pb_grpc
+# from .servicer import VectorStoreServicer
 from ..config import Settings, get_settings
-from ..grpc_gen import vectorstore_pb2 as pb
-from ..grpc_gen import vectorstore_pb2_grpc as pb_grpc
 from ..logging_setup import setup_logging
 from .bootstrap import build_index_service
-from .servicer import VectorStoreServicer
+from .rest_api import create_api
 
 logger = logging.getLogger(__name__)
 
@@ -47,41 +49,6 @@ def _wait_for_backends(index, settings: Settings) -> None:
     raise RuntimeError(f"Не удалось подключиться к бэкендам за отведённые попытки: {last_err}")
 
 
-class _HealthHandler(BaseHTTPRequestHandler):
-    """Минимальный /healthz — для health-проб платформы (HTTP-роутер ждёт 200)."""
-
-    def do_GET(self) -> None:  # noqa: N802
-        if self.path != "/healthz":
-            self.send_response(404)
-            self.end_headers()
-            return
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(b'{"status":"ok"}')
-
-    def log_message(self, *_args, **_kwargs) -> None:  # тише дефолтного access-лога
-        return
-
-
-def _start_healthz(host: str, port: int) -> HTTPServer:
-    srv = HTTPServer((host, port), _HealthHandler)
-    t = threading.Thread(target=srv.serve_forever, daemon=True, name="healthz")
-    t.start()
-    logger.info("HTTP /healthz слушает на %s:%d", host, port)
-    return srv
-
-
-def _max_workers(settings: Settings) -> int:
-    # Embedded-Qdrant (:memory:/on-disk) не потокобезопасен — гоняем в 1 поток.
-    if not settings.qdrant_url.startswith(("http://", "https://")):
-        logger.warning(
-            "Embedded-Qdrant (%s): max_workers=1 (нет потокобезопасности).", settings.qdrant_url
-        )
-        return 1
-    return settings.grpc_max_workers
-
-
 def serve() -> None:
     settings = get_settings()
     setup_logging(settings.log_level)
@@ -102,38 +69,31 @@ def serve() -> None:
         logger.info("Схема БД готова (auto_migrate=create_all)")
 
     token_on = bool(index.settings_store.get("api_token") or settings.api_token)
-    logger.info("gRPC API-токен: %s", "включён" if token_on else "ВЫКЛ (ручки открыты)")
+    logger.info("API-токен (Bearer): %s", "включён" if token_on else "ВЫКЛ (ручки открыты)")
 
-    mb = settings.grpc_max_message_mb * 1024 * 1024
-    options = [
-        ("grpc.max_send_message_length", mb),
-        ("grpc.max_receive_message_length", mb),
-    ]
-    server = grpc.server(ThreadPoolExecutor(max_workers=_max_workers(settings)), options=options)
-    pb_grpc.add_VectorStoreServicer_to_server(VectorStoreServicer(index, settings), server)
+    # --- gRPC (закомментировано — см. ADR-006). Когда платформа научится
+    #     проксировать HTTP/2/gRPC через публичный домен — снимем комментарий.
+    # mb = settings.grpc_max_message_mb * 1024 * 1024
+    # options = [
+    #     ("grpc.max_send_message_length", mb),
+    #     ("grpc.max_receive_message_length", mb),
+    # ]
+    # grpc_server = grpc.server(
+    #     ThreadPoolExecutor(max_workers=settings.grpc_max_workers), options=options
+    # )
+    # pb_grpc.add_VectorStoreServicer_to_server(VectorStoreServicer(index, settings), grpc_server)
+    # grpc_server.add_insecure_port(f"{settings.grpc_host}:{settings.grpc_port}")
+    # grpc_server.start()
+    # logger.info("gRPC слушает на %s:%d", settings.grpc_host, settings.grpc_port)
 
-    # gRPC reflection (для grpcurl), если доступен модуль
-    try:
-        from grpc_reflection.v1alpha import reflection
-
-        service_names = (
-            pb.DESCRIPTOR.services_by_name["VectorStore"].full_name,
-            reflection.SERVICE_NAME,
-        )
-        reflection.enable_server_reflection(service_names, server)
-    except Exception:  # noqa: BLE001
-        pass
-
-    addr = f"{settings.grpc_host}:{settings.grpc_port}"
-    server.add_insecure_port(addr)
-    server.start()
-    logger.info("gRPC слушает на %s", addr)
-
-    # Side-port HTTP /healthz (admin_host/admin_port — на проде это 8080,
-    # туда смотрит платформа). Сама админка теперь — отдельный локальный процесс.
-    _start_healthz(settings.admin_host, settings.admin_port)
-
-    server.wait_for_termination()
+    app = create_api(index, settings)
+    logger.info("REST API на http://%s:%d", settings.admin_host, settings.admin_port)
+    uvicorn.run(
+        app,
+        host=settings.admin_host,
+        port=settings.admin_port,
+        log_level=settings.log_level.lower(),
+    )
 
 
 if __name__ == "__main__":

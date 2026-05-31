@@ -1,11 +1,12 @@
-"""Локальная веб-админка (FastAPI) — отдельный процесс, gRPC-клиент к серверу.
+"""Локальная веб-админка (FastAPI) — отдельный процесс, HTTP-клиент к REST API.
 
 Запускается на машине администратора:
-    GRPC_TARGET=elion-dal.vibenest.net:443 API_TOKEN=... python -m elion_dal.admin.web
+    API_BASE_URL=https://elion-dal.vibenest.net API_TOKEN=... python -m elion_dal.admin.web
 
-UI без изменений: дашборд (объёмы + источники), поиск с dense_score, удаление
-источника/документа, загрузка PDF/DOCX (парсится локально и стримится через
-UpsertDocuments). На проде в контейнере НЕ ставится — только локально (.[admin]).
+UI без изменений: дашборд, поиск с dense_score, удаление, загрузка PDF/DOCX
+(парсится локально, отправляется через POST /api/v1/documents).
+
+(gRPC-клиент сохранён в admin/grpc_client.py для возможного возврата — см. ADR-006.)
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ from ..ingestion.loaders import load_document
 from ..service.sync import UpsertCounts
 from ..store.pg_repo import DocInput, SectionInput, sha256
 from ..store.settings_store import FIELDS
-from .grpc_client import GrpcAdminClient
+from .http_client import HttpAdminClient
 
 _HEAD = """<!doctype html><html lang=ru><head><meta charset=utf-8>
 <title>Элион — DAL Admin</title>
@@ -263,8 +264,8 @@ def main() -> None:
     """Локальный запуск админки. Читает env через Settings (см. .env.example).
 
     Пример:
-        GRPC_TARGET=elion-dal.vibenest.net:443 API_TOKEN=... ADMIN_PASSWORD=secret \
-            python -m elion_dal.admin.web
+        API_BASE_URL=https://elion-dal.vibenest.net API_TOKEN=... \
+            ADMIN_PASSWORD=secret python -m elion_dal.admin.web
     """
     import logging
 
@@ -276,11 +277,10 @@ def main() -> None:
     settings = get_settings()
     setup_logging(settings.log_level)
     log = logging.getLogger("elion_dal.admin")
-    log.info("Подключаюсь к gRPC: %s (insecure=%s)", settings.grpc_target, settings.grpc_insecure)
-    client = GrpcAdminClient(
-        target=settings.grpc_target,
+    log.info("REST API: %s", settings.api_base_url)
+    client = HttpAdminClient(
+        base_url=settings.api_base_url,
         token=settings.api_token,
-        insecure=settings.grpc_insecure,
     )
     auth = "basic-auth" if settings.admin_password else "БЕЗ auth (локально)"
     log.info("Admin UI на http://%s:%d (%s)", settings.admin_host, settings.admin_port, auth)

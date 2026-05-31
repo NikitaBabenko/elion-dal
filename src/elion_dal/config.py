@@ -34,9 +34,12 @@ class Settings(BaseSettings):
     # Может переопределяться в админке (app_settings.api_token), env — бутстрап/фолбэк.
     api_token: str = ""
 
-    # Подключение локальной админки к удалённому gRPC-серверу.
-    grpc_target: str = ""        # "host:port", напр. elion-dal.vibenest.net:443
-    grpc_insecure: bool = False  # true => plaintext (localhost/dev), иначе TLS
+    # Подключение локальной админки к удалённому REST-серверу.
+    api_base_url: str = ""        # https://elion-dal.vibenest.net (без хвостового /)
+    # (gRPC-параметры сохранены — могут пригодиться, когда платформа научится
+    # проксировать gRPC; см. ADR-006.)
+    grpc_target: str = ""
+    grpc_insecure: bool = False
 
     # Qdrant
     qdrant_url: str = "http://localhost:6333"

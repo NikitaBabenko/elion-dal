@@ -37,6 +37,30 @@ upsert в Qdrant (защита от дрейфа при сбое).
 пересборка индекса из PG; идемпотентность. Контракт с ETL: документ несёт `sections[]`
 (желательно из Markdown со структурой), иначе весь документ = один родитель.
 
+## ADR-006. Пивот публичного контракта: REST API вместо gRPC
+
+**Контекст.** После ADR-005 сервер был чисто gRPC. На VibeNest публичный домен идёт
+через Caddy/Coolify, который **не пропускает gRPC** (HTTP/2 с `content-type: application/grpc`):
+ответ `HTTP/2 :status 501`. Раздельные TCP-порты также не пробрасываются.
+
+**Решение.** Перевести публичный контракт на **REST API (FastAPI)** на том же порту,
+где раньше был stdlib /healthz. Все ручки требуют `Authorization: Bearer <token>` (кроме
+`/healthz`). Локальная админка — HTTP-клиент (httpx).
+
+**Что НЕ удалили.** Код gRPC сохранён целиком: `proto/`, `servicer.py`, `grpc_gen/`,
+`admin/grpc_client.py`, поля `grpc_*` в Settings. В `server.py` запуск gRPC-сервера
+закомментирован — раскомментируется, когда платформа научится проксировать gRPC.
+
+**Эквиваленты ручек:** Search → `POST /api/v1/search`; UpsertDocuments →
+`POST /api/v1/documents`; DeleteBySource/Doc → `DELETE /api/v1/sources/{id}` /
+`.../documents/{id}`; ListSources → `GET /api/v1/sources`; GetStats →
+`GET /api/v1/stats`; GetSettings/UpdateSettings → `GET/POST /api/v1/settings`;
+HealthCheck → `GET /healthz` (без auth).
+
+**Цена.** Стрим UpsertDocuments стал single-doc POST (для админки достаточно; для
+батча — можно добавить bulk-эндпоинт). Локально удобнее тестить (curl), нет gRPC-stub
+накладных расходов.
+
 ## ADR-005. Сервер только gRPC, админка — отдельный локальный процесс
 
 **Контекст.** Сервис деплоится на платформу с публичным URL. Встроенная HTTP-админка

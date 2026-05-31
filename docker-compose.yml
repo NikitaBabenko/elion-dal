@@ -37,23 +37,19 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      GRPC_HOST: 0.0.0.0
-      GRPC_PORT: 50051
       QDRANT_URL: http://qdrant:6333
       PG_DSN: postgresql+psycopg://elion:elion@postgres:5432/elion
       # На проде образ без torch -> бэкенд fastembed (e5-large, ONNX). flag/BGE-M3
       # потребует тяжёлого образа с .[flag].
       EMBEDDING_BACKEND: fastembed
       AUTO_MIGRATE: "true"
-      # Side-port для /healthz (HTTP-проба платформы). Админка теперь — отдельный
-      # локальный процесс (см. elion_dal.admin.web), на проде НЕ запускается.
+      # REST API + /healthz слушают на ADMIN_HOST:ADMIN_PORT.
       ADMIN_HOST: 0.0.0.0
       ADMIN_PORT: "8080"
-      # API-токен для gRPC; пусто => проверка выключена. Поднимается платформой.
+      # Bearer-токен для всех ручек кроме /healthz. Пусто => проверка выключена.
       API_TOKEN: ${API_TOKEN:-}
     ports:
-      - "50051:50051"   # gRPC
-      - "8080:8080"     # HTTP /healthz
+      - "8080:8080"     # REST API + /healthz
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=3).status==200 else 1)\""]
       interval: 15s
