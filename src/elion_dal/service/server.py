@@ -1,13 +1,18 @@
 """Точка входа gRPC-сервера VectorStore.
 
 Запуск:  python -m elion_dal.service.server
+
+На проде поднимается только gRPC + крошечный stdlib HTTP /healthz (для health-проб
+платформы). Админка отдельным процессом-клиентом — см. `elion_dal.admin.web`.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import grpc
 
@@ -40,6 +45,31 @@ def _wait_for_backends(index, settings: Settings) -> None:
             )
             time.sleep(settings.startup_retry_delay_s)
     raise RuntimeError(f"Не удалось подключиться к бэкендам за отведённые попытки: {last_err}")
+
+
+class _HealthHandler(BaseHTTPRequestHandler):
+    """Минимальный /healthz — для health-проб платформы (HTTP-роутер ждёт 200)."""
+
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path != "/healthz":
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"status":"ok"}')
+
+    def log_message(self, *_args, **_kwargs) -> None:  # тише дефолтного access-лога
+        return
+
+
+def _start_healthz(host: str, port: int) -> HTTPServer:
+    srv = HTTPServer((host, port), _HealthHandler)
+    t = threading.Thread(target=srv.serve_forever, daemon=True, name="healthz")
+    t.start()
+    logger.info("HTTP /healthz слушает на %s:%d", host, port)
+    return srv
 
 
 def _max_workers(settings: Settings) -> int:
@@ -99,25 +129,11 @@ def serve() -> None:
     server.start()
     logger.info("gRPC слушает на %s", addr)
 
-    if settings.admin_enabled:
-        # Веб-админка в этом же процессе (общий IndexService, одна модель).
-        import uvicorn
+    # Side-port HTTP /healthz (admin_host/admin_port — на проде это 8080,
+    # туда смотрит платформа). Сама админка теперь — отдельный локальный процесс.
+    _start_healthz(settings.admin_host, settings.admin_port)
 
-        from ..admin.web import create_app
-
-        admin_auth = "basic-auth" if settings.admin_password else "БЕЗ auth (dev)"
-        logger.info(
-            "Admin UI на http://%s:%d (%s)", settings.admin_host, settings.admin_port, admin_auth
-        )
-        uvicorn.run(
-            create_app(index, settings),
-            host=settings.admin_host,
-            port=settings.admin_port,
-            log_level=settings.log_level.lower(),
-        )
-        server.stop(0)
-    else:
-        server.wait_for_termination()
+    server.wait_for_termination()
 
 
 if __name__ == "__main__":

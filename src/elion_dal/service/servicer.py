@@ -146,6 +146,30 @@ class VectorStoreServicer(pb_grpc.VectorStoreServicer):
         self._authorize(context)
         return pb.SourceList(sources=[_source_to_pb(s) for s in self.index.list_sources()])
 
+    def _settings_to_pb(self) -> pb.SettingsList:
+        return pb.SettingsList(
+            fields=[
+                pb.SettingField(
+                    key=v.key,
+                    label=v.label,
+                    tier=v.tier,
+                    type=v.type,
+                    value="" if v.value is None else str(v.value),
+                    is_override=bool(v.is_override),
+                )
+                for v in self.index.settings_view()
+            ]
+        )
+
+    def GetSettings(self, request, context) -> pb.SettingsList:
+        self._authorize(context)
+        return self._settings_to_pb()
+
+    def UpdateSettings(self, request, context) -> pb.SettingsList:
+        self._authorize(context)
+        self.index.update_settings(dict(request.items))
+        return self._settings_to_pb()
+
     def GetStats(self, request, context) -> pb.Stats:
         self._authorize(context)
         st = self.index.get_stats()

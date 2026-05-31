@@ -45,15 +45,15 @@ services:
       # потребует тяжёлого образа с .[flag].
       EMBEDDING_BACKEND: fastembed
       AUTO_MIGRATE: "true"
+      # Side-port для /healthz (HTTP-проба платформы). Админка теперь — отдельный
+      # локальный процесс (см. elion_dal.admin.web), на проде НЕ запускается.
       ADMIN_HOST: 0.0.0.0
       ADMIN_PORT: "8080"
-      # Секреты подставляются платформой (Environment); пусто => auth выключен.
-      ADMIN_USER: ${ADMIN_USER:-admin}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      # API-токен для gRPC; пусто => проверка выключена. Поднимается платформой.
       API_TOKEN: ${API_TOKEN:-}
     ports:
       - "50051:50051"   # gRPC
-      - "8080:8080"     # веб-админка / health
+      - "8080:8080"     # HTTP /healthz
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=3).status==200 else 1)\""]
       interval: 15s

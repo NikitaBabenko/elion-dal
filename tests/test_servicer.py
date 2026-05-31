@@ -7,6 +7,7 @@ from elion_dal.grpc_gen import vectorstore_pb2 as pb
 from elion_dal.service.servicer import VectorStoreServicer
 from elion_dal.service.sync import ParentHit
 from elion_dal.store.pg_repo import SourceStats, StoreStats
+from elion_dal.store.settings_store import SettingView
 
 
 class FakeIndex:
@@ -14,6 +15,7 @@ class FakeIndex:
         self.docs = []
         self._hits = []
         self.deleted_docs = []
+        self.updated_settings = None
 
     def process_document(self, doc, counts):
         self.docs.append(doc)
@@ -37,6 +39,16 @@ class FakeIndex:
 
     def get_stats(self):
         return StoreStats(2, 4, 9, self.list_sources())
+
+    def settings_view(self):
+        return [
+            SettingView("search_parent_fanout", "Fan-out", "live", "int", 5, False),
+            SettingView("rerank_enabled", "Реранкер", "live", "bool", False, False),
+            SettingView("embedding_backend", "Бэкенд", "restart", "str", "fastembed", False),
+        ]
+
+    def update_settings(self, items):
+        self.updated_settings = items
 
 
 def make_servicer():
@@ -125,6 +137,30 @@ def test_get_stats():
     assert resp.total_parents == 4
     assert resp.total_chunks == 9
     assert len(resp.sources) == 1
+
+
+def test_get_settings_returns_fields():
+    svc = make_servicer()
+    resp = svc.GetSettings(pb.StatsRequest(), None)
+    keys = [f.key for f in resp.fields]
+    assert "search_parent_fanout" in keys
+    sf = next(f for f in resp.fields if f.key == "search_parent_fanout")
+    assert sf.tier == "live"
+    assert sf.value == "5"  # значение сериализовано в строку
+
+
+def test_update_settings_applies_and_returns_current():
+    svc = make_servicer()
+    resp = svc.UpdateSettings(
+        pb.SettingsUpdate(items={"search_parent_fanout": "9", "rerank_enabled": "true"}),
+        None,
+    )
+    assert svc.index.updated_settings == {
+        "search_parent_fanout": "9",
+        "rerank_enabled": "true",
+    }
+    # ответ — текущий список настроек (для UI)
+    assert any(f.key == "search_parent_fanout" for f in resp.fields)
 
 
 def test_search_uses_config_top_k_when_zero():

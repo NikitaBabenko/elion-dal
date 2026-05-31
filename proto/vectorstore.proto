@@ -26,6 +26,10 @@ service VectorStore {
   rpc ListSources(StatsRequest) returns (SourceList);
   rpc GetStats(StatsRequest) returns (Stats);
 
+  // Настройки (редактируется из локальной админки).
+  rpc GetSettings(StatsRequest) returns (SettingsList);
+  rpc UpdateSettings(SettingsUpdate) returns (SettingsList);
+
   // Проверка живости + доступности зависимостей.
   rpc HealthCheck(HealthRequest) returns (HealthStatus);
 }
@@ -121,6 +125,24 @@ message Stats {
   uint32 total_parents = 2;
   uint32 total_chunks = 3;
   repeated SourceInfo sources = 4;
+}
+
+// Настройки (управляемые из админки): значения хранятся в БД, override .env.
+message SettingField {
+  string key = 1;
+  string label = 2;
+  string tier = 3;          // "live" | "restart"
+  string type = 4;          // "int" | "float" | "bool" | "str"
+  string value = 5;         // сериализовано в строку (см. type)
+  bool is_override = 6;     // true если значение задано в БД, false — из .env-дефолтов
+}
+
+message SettingsList {
+  repeated SettingField fields = 1;
+}
+
+message SettingsUpdate {
+  map<string, string> items = 1;
 }
 
 message HealthRequest {}

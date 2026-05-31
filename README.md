@@ -119,23 +119,31 @@ grpcurl -plaintext -d '{"query":"налоговый вычет","top_k":3}' \
   Windows-only пакеты помечены маркером `sys_platform == "win32"`. Для прод-деплоя лок
   желательно регенерировать на целевой платформе (Linux) или через `uv`.
 
-## Веб-админка
+## Веб-админка (локальная, отдельный процесс)
 
-Поднимается в **том же процессе**, что и gRPC (общий `IndexService`, одна загруженная
-модель — без отдельных контейнеров). Старт сервера → `http://localhost:8080`:
-- дашборд: объёмы (документы/родители/чанки) и таблица источников с датой синхронизации;
-- поиск с показом `dense_score` и matched-сниппета;
-- удаление источника/документа;
-- загрузка PDF/DOCX → парсинг и индексация в один клик;
-- **редактирование настроек** (хранятся в БД `app_settings`, override поверх `.env`):
-  - *live* (применяются сразу): `search_prefetch`, `search_parent_fanout`, `recency_weight`,
-    `recency_halflife_days`, `rerank_enabled`, `chunk_tokens`, `chunk_overlap`;
-  - *restart* (подхватываются после перезапуска, помечены в UI): `embedding_backend`,
-    `embedding_model`, `embedding_quantize`.
-  Связь с инфраструктурой (`PG_DSN`/`QDRANT_URL`/порты) остаётся в `.env` (нужна для
-  bootstrap) и не редактируется из админки.
+Админка теперь — **отдельный процесс на машине администратора**, gRPC-клиент к
+удалённому серверу. На проде в контейнере она НЕ запускается — там только gRPC
+(50051) + крошечный stdlib `/healthz` (8080) для health-проб платформы.
 
-Отключается `ADMIN_ENABLED=false`.
+**Запуск локально:**
+```bash
+pip install -e ".[admin]"                            # FastAPI/uvicorn/python-multipart
+GRPC_TARGET=elion-dal.vibenest.net:443 \
+  API_TOKEN=<token> \
+  ADMIN_PASSWORD=<пусто или secret> \
+  python -m elion_dal.admin.web
+# UI: http://localhost:8080
+```
+
+Возможности (через gRPC):
+- дашборд: объёмы + таблица источников (`GetStats` / `ListSources`);
+- поиск с `dense_score` (`Search`);
+- удаление источника/документа (`DeleteBySource` / `DeleteByDoc`);
+- загрузка PDF/DOCX — парсится локально, стримится через `UpsertDocuments`;
+- редактирование настроек (`GetSettings` / `UpdateSettings`) — те же тиры live/restart.
+
+Env для локальной админки: `GRPC_TARGET` (host:port), `GRPC_INSECURE` (true для
+plaintext локалки), `API_TOKEN`, `ADMIN_USER/ADMIN_PASSWORD` (опц. Basic), `ADMIN_HOST/PORT`.
 
 ## Доступ / безопасность
 

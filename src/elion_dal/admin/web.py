@@ -1,8 +1,11 @@
-"""Лёгкая веб-админка (FastAPI) в том же процессе, что и gRPC.
+"""Локальная веб-админка (FastAPI) — отдельный процесс, gRPC-клиент к серверу.
 
-Работает с IndexService напрямую (in-process) — одна загруженная модель на оба
-интерфейса, без отдельных контейнеров. Возможности: дашборд (объёмы + источники),
-поиск с dense_score, удаление источника/документа, загрузка файла (PDF/DOCX → индекс).
+Запускается на машине администратора:
+    GRPC_TARGET=elion-dal.vibenest.net:443 API_TOKEN=... python -m elion_dal.admin.web
+
+UI без изменений: дашборд (объёмы + источники), поиск с dense_score, удаление
+источника/документа, загрузка PDF/DOCX (парсится локально и стримится через
+UpsertDocuments). На проде в контейнере НЕ ставится — только локально (.[admin]).
 """
 
 from __future__ import annotations
@@ -22,9 +25,10 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from ..ingestion.loaders import load_document
-from ..service.sync import IndexService, UpsertCounts
+from ..service.sync import UpsertCounts
 from ..store.pg_repo import DocInput, SectionInput, sha256
 from ..store.settings_store import FIELDS
+from .grpc_client import GrpcAdminClient
 
 _HEAD = """<!doctype html><html lang=ru><head><meta charset=utf-8>
 <title>Элион — DAL Admin</title>
@@ -119,7 +123,7 @@ def _basic_auth_dependency(settings):
     return check
 
 
-def create_app(index: IndexService, settings=None) -> FastAPI:
+def create_app(client, settings=None) -> FastAPI:
     # Basic-auth включается, только если задан пароль (иначе dev-режим без auth).
     deps = []
     if settings is not None and settings.admin_password:
@@ -133,7 +137,7 @@ def create_app(index: IndexService, settings=None) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard() -> str:
-        st = index.get_stats()
+        st = client.get_stats()
         rows = ""
         for s in st.sources:
             rows += (
@@ -166,7 +170,7 @@ def create_app(index: IndexService, settings=None) -> FastAPI:
           <button>Искать</button>
         </form>
         <div id=results></div>
-        {_settings_form(index.settings_view())}
+        {_settings_form(client.settings_view())}
         """
         return _HEAD + body + _SCRIPT
 
@@ -182,12 +186,12 @@ def create_app(index: IndexService, settings=None) -> FastAPI:
                 val = form.get(f.key)
                 if val is not None and str(val) != "":
                     items[f.key] = str(val)
-        index.update_settings(items)
+        client.update_settings(items)
         return RedirectResponse("/", status_code=303)
 
     @app.get("/api/stats")
     def api_stats() -> dict:
-        st = index.get_stats()
+        st = client.get_stats()
         return {
             "total_documents": st.total_documents,
             "total_parents": st.total_parents,
@@ -197,7 +201,7 @@ def create_app(index: IndexService, settings=None) -> FastAPI:
 
     @app.post("/api/search")
     def api_search(query: str = Form(...), top_k: int = Form(5)) -> list[dict]:
-        hits = index.search(query=query, top_k=top_k, source_ids=[], min_published_ts=0)
+        hits = client.search(query=query, top_k=top_k, source_ids=[], min_published_ts=0)
         return [
             {
                 "parent_id": h.parent_id,
@@ -216,12 +220,12 @@ def create_app(index: IndexService, settings=None) -> FastAPI:
 
     @app.post("/sources/{source_id}/delete")
     def delete_source(source_id: str) -> RedirectResponse:
-        index.delete_source(source_id)
+        client.delete_source(source_id)
         return RedirectResponse("/", status_code=303)
 
     @app.post("/docs/{doc_id}/delete")
     def delete_doc(doc_id: str) -> RedirectResponse:
-        index.delete_doc(doc_id)
+        client.delete_doc(doc_id)
         return RedirectResponse("/", status_code=303)
 
     @app.post("/upload")
@@ -249,7 +253,44 @@ def create_app(index: IndexService, settings=None) -> FastAPI:
             index_in_rag=True,
             sections=[SectionInput(section_id="0", heading_path=[], url=url, text=text)],
         )
-        index.process_document(doc, UpsertCounts())
+        client.process_document(doc, UpsertCounts())
         return RedirectResponse("/", status_code=303)
 
     return app
+
+
+def main() -> None:
+    """Локальный запуск админки. Читает env через Settings (см. .env.example).
+
+    Пример:
+        GRPC_TARGET=elion-dal.vibenest.net:443 API_TOKEN=... ADMIN_PASSWORD=secret \
+            python -m elion_dal.admin.web
+    """
+    import logging
+
+    import uvicorn
+
+    from ..config import get_settings
+    from ..logging_setup import setup_logging
+
+    settings = get_settings()
+    setup_logging(settings.log_level)
+    log = logging.getLogger("elion_dal.admin")
+    log.info("Подключаюсь к gRPC: %s (insecure=%s)", settings.grpc_target, settings.grpc_insecure)
+    client = GrpcAdminClient(
+        target=settings.grpc_target,
+        token=settings.api_token,
+        insecure=settings.grpc_insecure,
+    )
+    auth = "basic-auth" if settings.admin_password else "БЕЗ auth (локально)"
+    log.info("Admin UI на http://%s:%d (%s)", settings.admin_host, settings.admin_port, auth)
+    uvicorn.run(
+        create_app(client, settings),
+        host=settings.admin_host,
+        port=settings.admin_port,
+        log_level=settings.log_level.lower(),
+    )
+
+
+if __name__ == "__main__":
+    main()
