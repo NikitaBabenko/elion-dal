@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
-
 from elion_dal.chunking.chunker import Chunk
 from elion_dal.embedding.base import Embedding, SparseVector
 from elion_dal.service.sync import IndexService, UpsertCounts
@@ -72,15 +70,21 @@ class FakeQdrant:
         self.deleted_docs: list[str] = []
         self.search_hits: list[SearchHit] = []
         self.fail_upserts: int = 0  # сколько ближайших upsert_chunks уронить
+        self.fail_deletes: int = 0  # сколько ближайших delete_by_doc уронить (для rollback-теста)
+        self.upsert_calls: int = 0  # счётчик вызовов upsert_chunks (для теста батчинга)
         self.prefetch: int = 20
         self.last_limit: int | None = None
         self.last_prefetch: int | None = None
 
     def delete_by_doc(self, doc_id):
+        if self.fail_deletes > 0:
+            self.fail_deletes -= 1
+            raise RuntimeError("qdrant delete failed")
         self.deleted_docs.append(doc_id)
         self.points.pop(doc_id, None)
 
     def upsert_chunks(self, points):
+        self.upsert_calls += 1
         if self.fail_upserts > 0:
             self.fail_upserts -= 1
             raise RuntimeError("qdrant upsert failed")
@@ -227,12 +231,17 @@ def test_content_hash_autocomputed():
 
 
 def test_hash_not_committed_until_qdrant_success():
-    """A1: при сбое Qdrant хеш не фиксируется -> следующий прогон переиндексирует."""
+    """A1: при сбое Qdrant хеш не фиксируется -> следующий прогон переиндексирует.
+
+    Контракт изменился (P1): исключение Qdrant теперь ловится ВНУТРИ
+    process_document (counts.failed/failures), не пробрасывается наружу.
+    """
     svc = make_service()
     svc.qdrant.fail_upserts = 1  # первый upsert падает
     counts = UpsertCounts()
-    with pytest.raises(RuntimeError):
-        svc.process_document(doc(h="v1"), counts)
+    svc.process_document(doc(h="v1"), counts)
+    assert counts.failed == 1
+    assert counts.indexed == 0
     assert svc.pg.get_content_hash("d1") is None  # хеш НЕ зафиксирован
 
     # Qdrant ожил: повторный прогон индексирует, а не пропускает по хешу.
@@ -242,6 +251,46 @@ def test_hash_not_committed_until_qdrant_success():
     assert counts2.skipped == 0
     assert svc.pg.get_content_hash("d1") == "v1"
     assert svc.qdrant.points["d1"]
+
+
+def test_partial_write_rolled_back_on_failure():
+    """P1: сбой upsert -> откат (delete_by_doc) + гранулярный отчёт, hash pending."""
+    svc = make_service()
+    svc.qdrant.fail_upserts = 1
+    counts = UpsertCounts()
+    svc.process_document(doc(h="v1"), counts)
+    assert counts.failed == 1
+    assert "d1" in svc.qdrant.deleted_docs  # откат вызван
+    f = counts.failures[0]
+    assert f.doc_id == "d1"
+    assert f.stage == "qdrant_upsert"
+    assert f.total == 3  # три ребёнка "a|b|c"
+    assert f.rolled_back is True
+    assert svc.pg.get_content_hash("d1") is None
+
+
+def test_rollback_failure_marked():
+    """P1: если и откат падает -> rolled_back=False, hash всё равно pending."""
+    svc = make_service()
+    svc.qdrant.fail_upserts = 1
+    svc.qdrant.fail_deletes = 99  # откат тоже не пройдёт
+    counts = UpsertCounts()
+    svc.process_document(doc(h="v1"), counts)
+    assert counts.failed == 1
+    assert counts.failures[0].rolled_back is False
+    assert svc.pg.get_content_hash("d1") is None
+
+
+def test_upsert_batched_by_size():
+    """P1: большой документ пишется несколькими батчами по upsert_batch_size."""
+    svc = make_service()
+    svc.upsert_batch_size = 2
+    counts = UpsertCounts()
+    # "a|b|c|d|e" -> 5 детей -> 3 батча (2+2+1).
+    svc.process_document(doc(text="a|b|c|d|e", h="v1"), counts)
+    assert counts.indexed == 1
+    assert counts.chunks_upserted == 5
+    assert svc.qdrant.upsert_calls == 3
 
 
 def test_multisection_creates_two_parents():

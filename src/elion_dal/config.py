@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     # Qdrant
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection: str = "elion_chunks"
+    # Runtime-устойчивость к сбоям Qdrant (транзиентные IO/сетевые ошибки).
+    qdrant_timeout_s: float = 10.0          # глобальный таймаут http-клиента (сек)
+    qdrant_retry_attempts: int = 3          # всего попыток на сетевой вызов (1 = без ретраев)
+    qdrant_retry_base_delay_s: float = 0.5  # база экспоненциального backoff (сек)
+    # Размер окна embed+upsert при индексации; большие документы пишутся батчами.
+    upsert_batch_size: int = 256
 
     # Postgres (source-of-truth)
     pg_dsn: str = "postgresql+psycopg://elion:elion@localhost:5432/elion"

@@ -18,6 +18,15 @@ class FakeIndex:
         self.processed = []
         self.updated_settings = None
         self.settings_store = None  # без override токена
+        self._health = {
+            "ok": True,
+            "qdrant_ok": True,
+            "postgres_ok": True,
+            "embedding_backend": "fake",
+        }
+
+    def health(self):
+        return self._health
 
     def get_stats(self):
         return StoreStats(2, 3, 9, [SourceStats("s1", "Источник 1", 1700000000, 2, 3, 9)])
@@ -65,11 +74,39 @@ def app_with_token(token="secret"):
     return TestClient(create_api(FakeIndex(), Settings(api_token=token)))
 
 
-# ---------- /healthz ----------
+# ---------- /healthz + /readyz ----------
 def test_healthz_open():
     r = app_open().get("/healthz")
     assert r.status_code == 200
     assert r.json()["status"] == "ok"
+
+
+def test_readyz_ok_when_backends_healthy():
+    r = app_open().get("/readyz")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["qdrant_ok"] is True
+    assert body["postgres_ok"] is True
+
+
+def test_readyz_503_when_backend_unhealthy():
+    idx = FakeIndex()
+    idx._health = {
+        "ok": False, "qdrant_ok": False, "postgres_ok": True, "embedding_backend": "fake",
+    }
+    c = TestClient(create_api(idx, Settings()))
+    r = c.get("/readyz")
+    assert r.status_code == 503
+    assert r.json()["qdrant_ok"] is False
+
+
+def test_readyz_open_without_token():
+    # /readyz должен быть доступен без Bearer даже когда токен задан (проба платформы).
+    idx = FakeIndex()
+    c = TestClient(create_api(idx, Settings(api_token="secret")))
+    r = c.get("/readyz")
+    assert r.status_code == 200
 
 
 # ---------- auth ----------

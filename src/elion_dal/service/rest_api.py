@@ -29,7 +29,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
 from ..config import Settings
-from ..service.sync import IndexService, UpsertCounts
+from ..service.sync import DocFailure, IndexService, UpsertCounts
 from ..store.pg_repo import DocInput, SectionInput
 
 logger = logging.getLogger(__name__)
@@ -107,8 +107,15 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
 
     @app.get("/healthz")
     def healthz() -> dict:
-        # Открыт — для health-проб платформы.
+        # Liveness: «процесс жив». Открыт, без проверки бэкендов — для health-проб платформы.
         return {"status": "ok"}
+
+    @app.get("/readyz")
+    def readyz() -> JSONResponse:
+        # Readiness: реально пингует Qdrant+PG. Платформа снимает под с трафика при 503.
+        # Открыт (без auth), как и /healthz. index.health() сам не падает (ping в try/except).
+        h = index.health()
+        return JSONResponse(h, status_code=200 if h.get("ok") else 503)
 
     # --- поиск ---
     @app.post("/api/v1/search", dependencies=[Depends(auth)])
@@ -123,13 +130,14 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
                 min_published_ts=req.min_published_ts,
             )
         except Exception as e:  # noqa: BLE001 — деградируем мягко, не голым 500
-            # Полный traceback — в логи; клиенту — 503 (бэкенд поиска недоступен).
-            # TODO(diag): временно отдаём тип/сообщение в detail для диагностики 500
-            #             на проде; после фикса заменить на generic-текст.
+            # Полный traceback (с деталями бэкенда) — в логи; клиенту — честный 503 с
+            # типом ошибки (сигнал «недоступен бэкенд, повтори»), без сырого сообщения,
+            # чтобы не светить внутренние пути storage. См. ретраи в QdrantRepo: к этому
+            # моменту попытки уже исчерпаны.
             logger.exception("search failed query=%r", req.query)
             raise HTTPException(
                 status_code=503,
-                detail=f"search backend error: {type(e).__name__}: {str(e)[:300]}",
+                detail=f"search backend temporarily unavailable ({type(e).__name__})",
             ) from e
         dt_ms = (time.perf_counter() - t0) * 1000
         if hits:
@@ -193,8 +201,18 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
         counts = UpsertCounts()
         try:
             index.process_document(doc, counts)
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 — последний рубеж (например, сбой PG вне обёртки)
             counts.failed += 1
+            counts.failures.append(
+                DocFailure(
+                    doc_id=doc.doc_id,
+                    stage="pg",
+                    written=0,
+                    total=0,
+                    error=f"{type(e).__name__}: {str(e)[:200]}",
+                    rolled_back=False,
+                )
+            )
             logger.exception("Не удалось обработать документ doc_id=%s", doc.doc_id)
         return {
             "received": counts.received,
@@ -204,6 +222,17 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
             "failed": counts.failed,
             "parents_upserted": counts.parents_upserted,
             "chunks_upserted": counts.chunks_upserted,
+            "failures": [
+                {
+                    "doc_id": f.doc_id,
+                    "stage": f.stage,
+                    "written": f.written,
+                    "total": f.total,
+                    "error": f.error,
+                    "rolled_back": f.rolled_back,
+                }
+                for f in counts.failures
+            ],
         }
 
     # --- удаление ---

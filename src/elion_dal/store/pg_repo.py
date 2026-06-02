@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 
 from sqlalchemy import create_engine, delete, func, select, text
@@ -87,6 +87,36 @@ class StoreStats:
     total_parents: int
     total_chunks: int
     sources: list[SourceStats]
+
+
+@dataclass(slots=True)
+class ChunkRow:
+    """Готовый дочерний чанк из PG — для переэмбеддинга при reindex."""
+
+    parent_id: str
+    chunk_index: int
+    text: str
+
+
+@dataclass(slots=True)
+class ParentReindex:
+    """Поля родителя, нужные для payload точки Qdrant при reindex."""
+
+    url: str
+    heading_path: list[str]
+
+
+@dataclass(slots=True)
+class DocReindexRow:
+    """Документ с готовыми parents+chunks для пересборки индекса из PG (SoT)."""
+
+    doc_id: str
+    source_id: str
+    title: str
+    lang: str
+    published_ts: int
+    parents: dict[str, ParentReindex]  # parent_id -> (url, heading_path)
+    chunks: list[ChunkRow]  # все дети документа в порядке (parent, index)
 
 
 class PgRepo:
@@ -298,3 +328,65 @@ class PgRepo:
             tp = s.execute(select(func.count()).select_from(Parent)).scalar_one()
             tc = s.execute(select(func.count()).select_from(Chunk)).scalar_one()
         return StoreStats(int(td), int(tp), int(tc), sources)
+
+    def iter_documents_for_reindex(
+        self, source_id: str | None = None, batch: int = 200
+    ) -> Iterator[DocReindexRow]:
+        """Стримит документы (готовые к индексации) с их parents и chunks — для reindex.
+
+        Отдаются только закоммиченные документы: `index_in_rag=True` И `content_hash != ""`
+        (pending/полузаписанные пропускаем). Пагинация по `doc_id`, чтобы не держать весь
+        корпус в памяти. Чанки берутся ГОТОВЫМИ из PG (не перенарезаются) — их
+        `chunk_id = parent_id#index` даёт те же детерминированные point_id, т.е. точное
+        восстановление коллекции.
+        """
+        with self._sm() as s:
+            q = select(Document.doc_id).where(
+                Document.index_in_rag.is_(True), Document.content_hash != ""
+            )
+            if source_id is not None:
+                q = q.where(Document.source_id == source_id)
+            doc_ids = list(s.execute(q.order_by(Document.doc_id)).scalars())
+
+        for i in range(0, len(doc_ids), batch):
+            window = doc_ids[i : i + batch]
+            with self._sm() as s:
+                docs = {
+                    d.doc_id: d
+                    for d in s.execute(
+                        select(Document).where(Document.doc_id.in_(window))
+                    ).scalars()
+                }
+                parents = list(
+                    s.execute(select(Parent).where(Parent.doc_id.in_(window))).scalars()
+                )
+                chunks = list(
+                    s.execute(
+                        select(Chunk).where(Chunk.doc_id.in_(window)).order_by(
+                            Chunk.parent_id, Chunk.chunk_index
+                        )
+                    ).scalars()
+                )
+            parents_by_doc: dict[str, dict[str, ParentReindex]] = {}
+            for p in parents:
+                parents_by_doc.setdefault(p.doc_id, {})[p.parent_id] = ParentReindex(
+                    url=p.url, heading_path=list(p.heading_path or [])
+                )
+            chunks_by_doc: dict[str, list[ChunkRow]] = {}
+            for c in chunks:
+                chunks_by_doc.setdefault(c.doc_id, []).append(
+                    ChunkRow(parent_id=c.parent_id, chunk_index=c.chunk_index, text=c.text)
+                )
+            for doc_id in window:
+                d = docs.get(doc_id)
+                if d is None:
+                    continue
+                yield DocReindexRow(
+                    doc_id=d.doc_id,
+                    source_id=d.source_id,
+                    title=d.title,
+                    lang=d.lang,
+                    published_ts=int(d.published_ts or 0),
+                    parents=parents_by_doc.get(doc_id, {}),
+                    chunks=chunks_by_doc.get(doc_id, []),
+                )

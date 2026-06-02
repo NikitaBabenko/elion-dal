@@ -42,6 +42,9 @@ def build_index_service(settings: Settings | None = None, ensure: bool = True) -
         dim=provider.dim,  # размерность из реальной модели, не из конфига
         sparse_uses_idf=provider.sparse_uses_idf,
         prefetch=settings.search_prefetch,
+        timeout_s=settings.qdrant_timeout_s,
+        retry_attempts=settings.qdrant_retry_attempts,
+        retry_base_delay_s=settings.qdrant_retry_base_delay_s,
     )
     chunker = Chunker(
         chunk_tokens=settings.chunk_tokens,
@@ -68,4 +71,5 @@ def build_index_service(settings: Settings | None = None, ensure: bool = True) -
         settings_store=store,
         reranker_factory=_reranker_factory,
         base_settings=settings,
+        upsert_batch_size=settings.upsert_batch_size,
     )

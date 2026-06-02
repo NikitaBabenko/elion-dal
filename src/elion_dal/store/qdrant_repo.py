@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from qdrant_client import QdrantClient, models
 
 from ..embedding.base import Embedding
+from ..util.retry import call_with_retry
 from .models import point_id
 
 logger = logging.getLogger(__name__)
@@ -37,7 +39,7 @@ class SearchHit:
     score: float
 
 
-def _make_client(location: str) -> QdrantClient:
+def _make_client(location: str, timeout_s: float | None = None) -> QdrantClient:
     """Создать клиент Qdrant из строки конфига.
 
     Поддерживаются три режима (выбор по значению QDRANT_URL), без изменения кода:
@@ -45,9 +47,14 @@ def _make_client(location: str) -> QdrantClient:
       * ":memory:"                    -> embedded in-memory (тесты);
       * любой другой путь             -> embedded on-disk (локальная разработка без Docker).
     Embedded-режим — штатная возможность qdrant-client, поддерживает sparse и RRF.
+
+    `timeout_s` применяется только к http-режиму — чтобы зависший Qdrant-сервер не
+    вешал запрос навечно (embedded работает в процессе, таймаут не нужен).
     """
+    # check_compatibility=False: версия клиента пиннится через requirements.lock,
+    # а проверка дёргает сервер на старте (лишний запрос + warning в логах).
     if location.startswith(("http://", "https://")):
-        return QdrantClient(url=location)
+        return QdrantClient(url=location, timeout=timeout_s, check_compatibility=False)
     if location == ":memory:":
         return QdrantClient(location=":memory:")
     return QdrantClient(path=location)
@@ -61,12 +68,29 @@ class QdrantRepo:
         dim: int,
         sparse_uses_idf: bool,
         prefetch: int = 20,
+        timeout_s: float | None = None,
+        retry_attempts: int = 1,
+        retry_base_delay_s: float = 0.5,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
-        self.client = _make_client(url)
+        self.client = _make_client(url, timeout_s)
         self.collection = collection
         self.dim = dim
         self.sparse_uses_idf = sparse_uses_idf
         self.prefetch = prefetch
+        self._retry_attempts = max(1, retry_attempts)
+        self._retry_base_delay_s = retry_base_delay_s
+        self._sleep = sleep
+
+    def _retry(self, fn: Callable[[], object], op_name: str) -> object:
+        """Вызвать сетевую операцию Qdrant с ретраями на транзиентных сбоях."""
+        return call_with_retry(
+            fn,
+            attempts=self._retry_attempts,
+            base_delay_s=self._retry_base_delay_s,
+            sleep=self._sleep,
+            op_name=op_name,
+        )
 
     def ping(self) -> bool:
         try:
@@ -101,6 +125,13 @@ class QdrantRepo:
             field_schema=models.PayloadSchemaType.INTEGER,
         )
 
+    def recreate_collection(self) -> None:
+        """Снести коллекцию целиком и создать заново (чистое восстановление при reindex
+        после повреждения storage). Удаление идемпотентно (нет коллекции — не ошибка)."""
+        if self.client.collection_exists(self.collection):
+            self.client.delete_collection(self.collection)
+        self.ensure_collection()
+
     def _warn_on_dim_mismatch(self) -> None:
         """Если коллекция уже есть с другой размерностью dense — предупредить
         (например, сменили модель эмбеддингов без пересоздания коллекции)."""
@@ -134,35 +165,48 @@ class QdrantRepo:
         ]
         if not structs:
             return 0
-        self.client.upsert(collection_name=self.collection, points=structs, wait=True)
+        self._retry(
+            lambda: self.client.upsert(
+                collection_name=self.collection, points=structs, wait=True
+            ),
+            "upsert_chunks",
+        )
         return len(structs)
 
     def delete_by_doc(self, doc_id: str) -> None:
-        self.client.delete(
-            collection_name=self.collection,
-            points_selector=models.FilterSelector(
-                filter=models.Filter(
-                    must=[
-                        models.FieldCondition(key="doc_id", match=models.MatchValue(value=doc_id))
-                    ]
-                )
+        self._retry(
+            lambda: self.client.delete(
+                collection_name=self.collection,
+                points_selector=models.FilterSelector(
+                    filter=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="doc_id", match=models.MatchValue(value=doc_id)
+                            )
+                        ]
+                    )
+                ),
+                wait=True,
             ),
-            wait=True,
+            "delete_by_doc",
         )
 
     def delete_by_source(self, source_id: str) -> None:
-        self.client.delete(
-            collection_name=self.collection,
-            points_selector=models.FilterSelector(
-                filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="source_id", match=models.MatchValue(value=source_id)
-                        )
-                    ]
-                )
+        self._retry(
+            lambda: self.client.delete(
+                collection_name=self.collection,
+                points_selector=models.FilterSelector(
+                    filter=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="source_id", match=models.MatchValue(value=source_id)
+                            )
+                        ]
+                    )
+                ),
+                wait=True,
             ),
-            wait=True,
+            "delete_by_source",
         )
 
     def _filter(self, source_ids: Sequence[str], min_published_ts: int) -> models.Filter | None:
@@ -190,22 +234,25 @@ class QdrantRepo:
         число кандидатов на ветку (живая настройка)."""
         qfilter = self._filter(source_ids, min_published_ts)
         pf = prefetch_limit or self.prefetch
-        result = self.client.query_points(
-            collection_name=self.collection,
-            prefetch=[
-                models.Prefetch(query=query.dense, using=DENSE, limit=pf, filter=qfilter),
-                models.Prefetch(
-                    query=models.SparseVector(
-                        indices=query.sparse.indices, values=query.sparse.values
+        result = self._retry(
+            lambda: self.client.query_points(
+                collection_name=self.collection,
+                prefetch=[
+                    models.Prefetch(query=query.dense, using=DENSE, limit=pf, filter=qfilter),
+                    models.Prefetch(
+                        query=models.SparseVector(
+                            indices=query.sparse.indices, values=query.sparse.values
+                        ),
+                        using=SPARSE,
+                        limit=pf,
+                        filter=qfilter,
                     ),
-                    using=SPARSE,
-                    limit=pf,
-                    filter=qfilter,
-                ),
-            ],
-            query=models.FusionQuery(fusion=models.Fusion.RRF),
-            limit=limit,
-            with_payload=True,
+                ],
+                query=models.FusionQuery(fusion=models.Fusion.RRF),
+                limit=limit,
+                with_payload=True,
+            ),
+            "search",
         )
         hits: list[SearchHit] = []
         for p in result.points:
@@ -232,13 +279,16 @@ class QdrantRepo:
         """Только-dense поиск -> {chunk_id: cosine}. Нужен для confidence-сигнала
         (RRF-fusion не отдаёт сырые косинусы)."""
         qfilter = self._filter(source_ids, min_published_ts)
-        result = self.client.query_points(
-            collection_name=self.collection,
-            query=query.dense,
-            using=DENSE,
-            limit=limit,
-            with_payload=["chunk_id"],
-            query_filter=qfilter,
+        result = self._retry(
+            lambda: self.client.query_points(
+                collection_name=self.collection,
+                query=query.dense,
+                using=DENSE,
+                limit=limit,
+                with_payload=["chunk_id"],
+                query_filter=qfilter,
+            ),
+            "dense_scores",
         )
         out: dict[str, float] = {}
         for p in result.points:
