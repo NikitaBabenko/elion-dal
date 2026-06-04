@@ -46,10 +46,14 @@ def build_index_service(settings: Settings | None = None, ensure: bool = True) -
         retry_attempts=settings.qdrant_retry_attempts,
         retry_base_delay_s=settings.qdrant_retry_base_delay_s,
     )
+    # chunk_tokenizer_model — restart-настройка: override из БД поверх .env (как embedding_*).
+    tokenizer_model = store.get("chunk_tokenizer_model") or settings.chunk_tokenizer_model
     chunker = Chunker(
         chunk_tokens=settings.chunk_tokens,
         chunk_overlap=settings.chunk_overlap,
-        model_name=settings.chunk_tokenizer_model,
+        model_name=tokenizer_model,
+        min_tokens=settings.chunk_min_tokens,
+        separator_mode=settings.chunk_separator_mode,
     )
 
     def _reranker_factory():

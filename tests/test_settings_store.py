@@ -54,6 +54,24 @@ def test_view_marks_overrides(tmp_path):
     assert view["embedding_backend"].tier == "restart"
 
 
+def test_new_chunk_fields_present_and_typed(tmp_path):
+    store = make_store(tmp_path)
+    store.set_many(
+        {"chunk_min_tokens": "20", "chunk_separator_mode": "token", "search_top_k": "7"}
+    )
+    assert store.get("chunk_min_tokens") == 20  # int
+    assert store.get("chunk_separator_mode") == "token"  # str
+    assert store.get("search_top_k") == 7  # int
+    view = {v.key: v for v in store.view(Settings())}
+    # токенайзер длины — restart-тир (применяется на старте)
+    assert view["chunk_tokenizer_model"].tier == "restart"
+    assert view["chunk_tokenizer_model"].value == Settings().chunk_tokenizer_model
+    # фильтр мусора и стратегия — live
+    assert view["chunk_min_tokens"].tier == "live"
+    assert view["chunk_separator_mode"].tier == "live"
+    assert view["search_top_k"].tier == "live"
+
+
 def test_load_without_table_is_safe(tmp_path):
     # Стор поверх БД без миграций (нет таблицы) -> пустые overrides, без падения.
     repo = PgRepo(f"sqlite:///{(tmp_path / 'empty.db').as_posix()}")

@@ -12,6 +12,9 @@
 - DELETE /api/v1/documents/{doc_id}   — удалить документ
 - GET    /api/v1/sources              — список источников + объёмы
 - GET    /api/v1/stats                — суммарная статистика
+- GET    /api/v1/documents            — список документов (+ объёмы), опц. ?source_id=
+- GET    /api/v1/documents/{doc_id}/detail — документ с секциями(parents) и чанками
+- POST   /api/v1/chunk-preview        — dry-run нарезки текста (не трогает индекс)
 - GET    /api/v1/settings             — текущие настройки (live + restart)
 - POST   /api/v1/settings             — обновить настройки (items: dict)
 """
@@ -71,6 +74,14 @@ class SettingsUpdateIn(BaseModel):
     items: dict[str, str]
 
 
+class ChunkPreviewIn(BaseModel):
+    text: str
+    chunk_tokens: int | None = None
+    chunk_overlap: int | None = None
+    min_tokens: int | None = None
+    separator_mode: str | None = None
+
+
 # ----------- auth -----------
 
 
@@ -120,7 +131,7 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
     # --- поиск ---
     @app.post("/api/v1/search", dependencies=[Depends(auth)])
     def search(req: SearchIn, request: Request) -> dict:
-        top_k = req.top_k or settings.search_top_k
+        top_k = req.top_k or index.live_top_k()
         t0 = time.perf_counter()
         try:
             hits = index.search(
@@ -270,6 +281,73 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
             "total_chunks": st.total_chunks,
             "sources": [_source_to_dict(s) for s in st.sources],
         }
+
+    # --- просмотр документов и чанков (для админки) ---
+    @app.get("/api/v1/documents", dependencies=[Depends(auth)])
+    def list_documents(source_id: str = "") -> dict:
+        docs = index.list_documents(source_id or None)
+        return {
+            "documents": [
+                {
+                    "doc_id": d.doc_id,
+                    "source_id": d.source_id,
+                    "title": d.title,
+                    "lang": d.lang,
+                    "published_ts": d.published_ts,
+                    "index_in_rag": d.index_in_rag,
+                    "indexed": d.indexed,
+                    "parent_count": d.parent_count,
+                    "chunk_count": d.chunk_count,
+                }
+                for d in docs
+            ]
+        }
+
+    @app.get("/api/v1/documents/{doc_id}/detail", dependencies=[Depends(auth)])
+    def document_detail(doc_id: str) -> dict:
+        d = index.get_document_detail(doc_id)
+        if d is None:
+            raise HTTPException(status_code=404, detail="document not found")
+        return {
+            "doc_id": d.doc_id,
+            "source_id": d.source_id,
+            "title": d.title,
+            "url": d.url,
+            "lang": d.lang,
+            "published_ts": d.published_ts,
+            "index_in_rag": d.index_in_rag,
+            "indexed": d.indexed,
+            "parents": [
+                {
+                    "parent_id": p.parent_id,
+                    "section_id": p.section_id,
+                    "heading_path": list(p.heading_path),
+                    "ordinal": p.ordinal,
+                    "token_count": p.token_count,
+                    "text": p.text,
+                    "chunks": [
+                        {
+                            "chunk_id": c.chunk_id,
+                            "chunk_index": c.chunk_index,
+                            "text": c.text,
+                            "token_count": c.token_count,
+                        }
+                        for c in p.chunks
+                    ],
+                }
+                for p in d.parents
+            ],
+        }
+
+    @app.post("/api/v1/chunk-preview", dependencies=[Depends(auth)])
+    def chunk_preview(req: ChunkPreviewIn) -> dict:
+        return index.preview_chunking(
+            text=req.text,
+            chunk_tokens=req.chunk_tokens,
+            chunk_overlap=req.chunk_overlap,
+            min_tokens=req.min_tokens,
+            separator_mode=req.separator_mode,
+        )
 
     # --- настройки ---
     @app.get("/api/v1/settings", dependencies=[Depends(auth)])

@@ -132,6 +132,9 @@ grpcurl -plaintext -d '{"query":"налоговый вычет","top_k":3}' \
 | `DELETE /api/v1/sources/{id}` | удалить источник |
 | `DELETE /api/v1/documents/{id}` | удалить документ |
 | `GET /api/v1/sources` / `GET /api/v1/stats` | админ-статистика |
+| `GET /api/v1/documents` (опц. `?source_id=`) | список документов с объёмами (для браузера чанков) |
+| `GET /api/v1/documents/{id}/detail` | документ + секции(parents) + чанки (текст, токены) |
+| `POST /api/v1/chunk-preview` | dry-run нарезки текста (не трогает индекс) |
 | `GET /api/v1/settings` / `POST /api/v1/settings` | управляемые настройки |
 
 OpenAPI/Swagger: `/docs` (FastAPI отдаёт автоматом).
@@ -141,6 +144,17 @@ OpenAPI/Swagger: `/docs` (FastAPI отдаёт автоматом).
 Админка живёт **в том же процессе, что и REST API**, монтируется на **`/admin/`**.
 Внутри неё клиент = сам `IndexService` (без внутренних HTTP-хопов). Защищена
 HTTP Basic из env (`ADMIN_USER`/`ADMIN_PASSWORD`); пустой пароль — auth выключен.
+
+Что умеет дашборд: статистика и источники, загрузка PDF/DOCX, гибридный поиск с
+`dense_score`, редактирование настроек (live применяются сразу, restart — после
+перезапуска). Дополнительно для отладки качества RAG:
+- **Настройки нарезки**: `chunk_tokens`/`chunk_overlap`, **`chunk_min_tokens`** (фильтр
+  мусора — чанки короче дропаются), **`chunk_separator_mode`** (`structured`|`token`),
+  `chunk_tokenizer_model` (restart), `search_top_k`.
+- **Превью нарезки (dry-run)**: вставить текст → видно, как он нарежется при заданных
+  параметрах (число чанков, токены, сколько отсеяно), реальные данные не меняются.
+- **Документы и чанки**: источник → документ → его секции(parents) и чанки с длиной в
+  токенах и подсветкой перекрытия соседних чанков.
 
 - `https://<domain>/`         → 404 (нет ничего в корне)
 - `https://<domain>/healthz`   → health (открыт)
@@ -176,7 +190,9 @@ pytest -m integration  # round-trip на поднятых Qdrant+Postgres (+ск
 ## Конфигурация (`.env`)
 
 См. `.env.example`: `GRPC_*`, `QDRANT_URL`, `PG_DSN`, `EMBEDDING_BACKEND`
-(`fastembed`|`flag`), `CHUNK_TOKENS`/`CHUNK_OVERLAP`, `SEARCH_TOP_K`/`SEARCH_PREFETCH`.
+(`fastembed`|`flag`), `CHUNK_TOKENS`/`CHUNK_OVERLAP`/`CHUNK_MIN_TOKENS`/
+`CHUNK_SEPARATOR_MODE`, `SEARCH_TOP_K`/`SEARCH_PREFETCH`. Большинство этих параметров
+также редактируются на лету в админке (override в `app_settings` поверх `.env`).
 
 ## За рамками сервиса
 

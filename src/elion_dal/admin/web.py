@@ -43,6 +43,12 @@ _HEAD = """<!doctype html><html lang=ru><head><meta charset=utf-8>
  input,button{font-size:14px;padding:6px 8px} button{cursor:pointer}
  .hit{border:1px solid #eee;border-radius:8px;padding:10px;margin:8px 0}
  .muted{color:#888;font-size:12px}
+ textarea{font-family:inherit;font-size:14px;padding:6px 8px;box-sizing:border-box}
+ .chunk{border:1px solid #eee;border-left:3px solid #4a90d9;border-radius:6px;padding:8px 10px;margin:6px 0;font-size:13px;white-space:pre-wrap;word-break:break-word}
+ .tok{display:inline-block;background:#eef3fb;color:#345;border-radius:10px;padding:1px 8px;font-size:11px;margin-right:6px}
+ .ov{background:#fff3bf;border-radius:2px}
+ .summary{margin:8px 0;font-size:14px}
+ .sec{border:1px solid #eee;border-radius:8px;padding:8px 10px;margin:8px 0}
 </style></head><body>
 <h1>Элион — DAL Admin</h1>"""
 
@@ -63,6 +69,80 @@ async function doSearch(e){
       `<div>${h.text.slice(0,400)}</div><div class=muted><a href='${h.url}'>${h.url}</a></div>`;
     box.appendChild(el);
   }
+}
+
+function esc(s){const d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
+
+// наибольший общий «суффикс a ∩ префикс b» — визуализация перекрытия соседних чанков
+function overlapLen(a,b){
+  const max=Math.min(a.length,b.length);
+  for(let n=max;n>0;n--){ if(a.slice(a.length-n)===b.slice(0,n)) return n; }
+  return 0;
+}
+
+function renderChunks(box, chunks){
+  box.innerHTML='';
+  for(let i=0;i<chunks.length;i++){
+    const c=chunks[i], t=c.text||'';
+    const idx=(c.index!=null?c.index:c.chunk_index);
+    let head=(i>0)?overlapLen(chunks[i-1].text||'', t):0;
+    let tail=(i<chunks.length-1)?overlapLen(t, chunks[i+1].text||''):0;
+    if(head+tail>t.length){head=0;tail=0;}  // защита от наложения подсветок на коротком чанке
+    const body=(head?`<span class=ov>${esc(t.slice(0,head))}</span>`:'')+
+      esc(t.slice(head, t.length-tail))+
+      (tail?`<span class=ov>${esc(t.slice(t.length-tail))}</span>`:'');
+    const el=document.createElement('div'); el.className='chunk';
+    el.innerHTML=`<span class=tok>#${idx} · ${c.token_count} ток.</span>`+body;
+    box.appendChild(el);
+  }
+}
+
+async function doPreview(e){
+  e.preventDefault();
+  const body=new URLSearchParams();
+  body.set('text', document.getElementById('pv_text').value);
+  const tk=document.getElementById('pv_tokens').value; if(tk) body.set('chunk_tokens',tk);
+  const ov=document.getElementById('pv_overlap').value; if(ov) body.set('chunk_overlap',ov);
+  const mn=document.getElementById('pv_min').value; if(mn) body.set('min_tokens',mn);
+  const md=document.getElementById('pv_mode').value; if(md) body.set('separator_mode',md);
+  const r=await fetch('api/chunk-preview',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
+  const data=await r.json(); const s=data.summary||{};
+  const box=document.getElementById('pv_results');
+  box.innerHTML=`<div class=summary>чанков: <b>${s.count}</b> · токенов: ${s.total_tokens} · среднее: ${s.avg_tokens} · отсеяно: ${s.dropped} `+
+    `<span class=muted>(tokens=${s.chunk_tokens} overlap=${s.chunk_overlap} min=${s.min_tokens} mode=${s.separator_mode})</span></div>`;
+  const wrap=document.createElement('div'); box.appendChild(wrap);
+  renderChunks(wrap, data.chunks||[]);
+}
+
+async function loadDocs(e){
+  if(e) e.preventDefault();
+  const src=document.getElementById('doc_source').value;
+  const r=await fetch('api/documents'+(src?`?source_id=${encodeURIComponent(src)}`:''));
+  const data=await r.json();
+  document.getElementById('doc_detail').innerHTML='';
+  const box=document.getElementById('doc_list');
+  if(!data.length){box.innerHTML='<p class=muted>Документов нет.</p>';return;}
+  let html='<table><tr><th>title</th><th>source</th><th>род.</th><th>чанки</th><th>RAG</th><th></th></tr>';
+  for(const d of data){
+    const rag=d.index_in_rag?(d.indexed?'✓':'pending'):'—';
+    html+=`<tr><td>${esc(d.title)}</td><td>${esc(d.source_id)}</td><td>${d.parent_count}</td><td>${d.chunk_count}</td>`+
+      `<td>${rag}</td><td><button onclick="showChunks('${esc(d.doc_id)}')">чанки</button></td></tr>`;
+  }
+  box.innerHTML=html+'</table>';
+}
+
+async function showChunks(docId){
+  const r=await fetch(`api/documents/${encodeURIComponent(docId)}/detail`);
+  const d=await r.json();
+  const box=document.getElementById('doc_detail');
+  const parents=d.parents||[];
+  let html=`<h3>${esc(d.title)} <span class=muted>${esc(d.doc_id)} · ${d.indexed?'indexed':'pending'}</span></h3>`;
+  for(let i=0;i<parents.length;i++){
+    const p=parents[i];
+    html+=`<div class=sec><b>секция ${esc(p.section_id)}</b> <span class=muted>${(p.heading_path||[]).join(' › ')} · ${p.token_count} ток. · детей: ${p.chunks.length}</span><div id=sec_${i}></div></div>`;
+  }
+  box.innerHTML=html;
+  for(let i=0;i<parents.length;i++){ renderChunks(document.getElementById('sec_'+i), parents[i].chunks); }
 }
 </script></body></html>"""
 
@@ -139,6 +219,10 @@ def create_app(client, settings=None) -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     def dashboard() -> str:
         st = client.get_stats()
+        src_options = "<option value=''>(все источники)</option>" + "".join(
+            f"<option value='{html.escape(s.source_id)}'>{html.escape(s.source_id)}</option>"
+            for s in st.sources
+        )
         rows = ""
         for s in st.sources:
             rows += (
@@ -171,6 +255,30 @@ def create_app(client, settings=None) -> FastAPI:
           <button>Искать</button>
         </form>
         <div id=results></div>
+        <h2>Превью нарезки (dry-run)</h2>
+        <p class=muted>Вставьте текст и посмотрите, как он нарежется. Пустые поля = текущие настройки. Реальные данные не меняются.</p>
+        <form onsubmit='doPreview(event)'>
+          <textarea id=pv_text rows=6 style='width:100%' placeholder='Вставьте текст...' required></textarea>
+          <div style='margin-top:6px'>
+            токены <input id=pv_tokens type=number min=1 style='width:70px'>
+            overlap <input id=pv_overlap type=number min=0 style='width:70px'>
+            мин <input id=pv_min type=number min=0 style='width:70px'>
+            режим <select id=pv_mode>
+              <option value=''>(текущий)</option>
+              <option value='structured'>structured</option>
+              <option value='token'>token</option>
+            </select>
+            <button>Показать нарезку</button>
+          </div>
+        </form>
+        <div id=pv_results></div>
+        <h2>Документы и чанки</h2>
+        <form onsubmit='loadDocs(event)'>
+          источник <select id=doc_source>{src_options}</select>
+          <button>Загрузить список</button>
+        </form>
+        <div id=doc_list></div>
+        <div id=doc_detail></div>
         {_settings_form(client.settings_view())}
         """
         return _HEAD + body + _SCRIPT
@@ -218,6 +326,33 @@ def create_app(client, settings=None) -> FastAPI:
             }
             for h in hits
         ]
+
+    # Возвращаем результат клиента как есть (БЕЗ аннотации/response_model): в in-process
+    # режиме client=IndexService отдаёт dataclass'ы, в standalone — dict'ы; jsonable_encoder
+    # FastAPI корректно разворачивает оба (response_model тут только мешал бы коэрцией).
+    @app.get("/api/documents")
+    def api_documents(source_id: str = ""):
+        return client.list_documents(source_id)
+
+    @app.get("/api/documents/{doc_id}/detail")
+    def api_document_detail(doc_id: str):
+        return client.get_document_detail(doc_id)
+
+    @app.post("/api/chunk-preview")
+    def api_chunk_preview(
+        text: str = Form(...),
+        chunk_tokens: int | None = Form(None),
+        chunk_overlap: int | None = Form(None),
+        min_tokens: int | None = Form(None),
+        separator_mode: str | None = Form(None),
+    ):
+        return client.preview_chunking(
+            text=text,
+            chunk_tokens=chunk_tokens,
+            chunk_overlap=chunk_overlap,
+            min_tokens=min_tokens,
+            separator_mode=separator_mode,
+        )
 
     def _dashboard_url(request: Request) -> str:
         # request.url_for учитывает mount-префикс (/admin/), не ломаясь при разном размещении.

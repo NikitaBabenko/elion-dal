@@ -39,3 +39,43 @@ def test_short_text_is_single_chunk():
     assert len(chunks) == 1
     assert chunks[0].index == 0
     assert chunks[0].token_count == 3
+
+
+def test_min_tokens_drops_short_and_renumbers():
+    text = " ".join(f"слово{i}" for i in range(45))
+    base = make_chunker(tokens=10, overlap=2).split(text)
+    filtered = Chunker(chunk_tokens=10, chunk_overlap=2, min_tokens=5, length_fn=WORDS).split(text)
+    # все оставшиеся не короче порога
+    assert all(c.token_count >= 5 for c in filtered)
+    assert len(filtered) <= len(base)
+    # индексы непрерывны после дропа
+    assert [c.index for c in filtered] == list(range(len(filtered)))
+
+
+def test_min_tokens_zero_is_backward_compatible():
+    text = " ".join(f"w{i}" for i in range(30))
+    a = Chunker(chunk_tokens=8, chunk_overlap=2, min_tokens=0, length_fn=WORDS).split(text)
+    b = make_chunker(tokens=8, overlap=2).split(text)
+    assert [c.text for c in a] == [c.text for c in b]
+
+
+def test_separator_mode_stored_and_validated():
+    assert Chunker(chunk_tokens=10, chunk_overlap=2, length_fn=WORDS).separator_mode == "structured"
+    tok = Chunker(chunk_tokens=10, chunk_overlap=2, separator_mode="token", length_fn=WORDS)
+    assert tok.separator_mode == "token"
+    # неизвестный режим тихо откатывается на structured
+    bad = Chunker(chunk_tokens=10, chunk_overlap=2, separator_mode="???", length_fn=WORDS)
+    assert bad.separator_mode == "structured"
+
+
+def test_separator_modes_both_produce_chunks():
+    text = "Первое предложение. Второе предложение! Третье; четвёртое, пятое слово тут."
+    structured = Chunker(
+        chunk_tokens=4, chunk_overlap=0, separator_mode="structured", length_fn=WORDS
+    ).split(text)
+    token = Chunker(
+        chunk_tokens=4, chunk_overlap=0, separator_mode="token", length_fn=WORDS
+    ).split(text)
+    assert structured and token
+    assert all(c.token_count <= 4 for c in structured)
+    assert all(c.token_count <= 4 for c in token)

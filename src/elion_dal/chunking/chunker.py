@@ -19,6 +19,16 @@ class Chunk:
     token_count: int
 
 
+# Пресеты границ нарезки (передаются в RecursiveCharacterTextSplitter):
+#   structured — режем по естественным границам (абзацы → строки → предложения → слова);
+#   token      — жёстко: абзац/строка/слово/символ, без учёта границ предложений.
+SEPARATOR_PRESETS: dict[str, list[str]] = {
+    "structured": ["\n\n", "\n", ". ", "? ", "! ", "; ", ", ", " ", ""],
+    "token": ["\n\n", "\n", " ", ""],
+}
+DEFAULT_SEPARATOR_MODE = "structured"
+
+
 @lru_cache(maxsize=1)
 def _tokenizer(model_name: str = "BAAI/bge-m3"):
     from transformers import AutoTokenizer
@@ -36,6 +46,8 @@ class Chunker:
         chunk_tokens: int = 400,
         chunk_overlap: int = 64,
         model_name: str = "BAAI/bge-m3",
+        min_tokens: int = 0,
+        separator_mode: str = DEFAULT_SEPARATOR_MODE,
         length_fn: Callable[[str], int] | None = None,
     ) -> None:
         if chunk_overlap >= chunk_tokens:
@@ -43,6 +55,12 @@ class Chunker:
         self.chunk_tokens = chunk_tokens
         self.chunk_overlap = chunk_overlap
         self._model_name = model_name
+        # Фильтр мусора: чанки короче min_tokens дропаются (0 = выкл).
+        self.min_tokens = max(0, min_tokens)
+        # Неизвестный режим тихо откатываем на structured (валидация на входе).
+        self.separator_mode = (
+            separator_mode if separator_mode in SEPARATOR_PRESETS else DEFAULT_SEPARATOR_MODE
+        )
         # length_fn задаётся в тестах (offline); иначе считаем токенами BGE-M3.
         self._length_fn = length_fn
 
@@ -56,18 +74,38 @@ class Chunker:
         return self._count(text)
 
     def split(self, text: str) -> list[Chunk]:
+        """Нарезать текст на чанки.
+
+        Куски короче min_tokens отбрасываются (фильтр мусора), а оставшиеся
+        перенумеровываются подряд — chunk_id = parent_id#index остаётся
+        детерминированным и непрерывным. ВНИМАНИЕ: при агрессивном min_tokens у
+        короткой секции могут отсеяться все дети, тогда parent окажется без точек
+        в Qdrant и не найдётся поиском — это и есть смысл фильтра. При min_tokens=0
+        поведение полностью совпадает с прежним (обратная совместимость).
+        """
         from langchain_text_splitters import RecursiveCharacterTextSplitter
 
         text = (text or "").strip()
         if not text:
             return []
 
+        separators = SEPARATOR_PRESETS.get(
+            self.separator_mode, SEPARATOR_PRESETS[DEFAULT_SEPARATOR_MODE]
+        )
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=self.chunk_tokens,
             chunk_overlap=self.chunk_overlap,
             length_function=self._count,
-            separators=["\n\n", "\n", ". ", "? ", "! ", "; ", ", ", " ", ""],
+            separators=separators,
             keep_separator=True,
         )
-        pieces = [p.strip() for p in splitter.split_text(text) if p.strip()]
-        return [Chunk(index=i, text=p, token_count=self._count(p)) for i, p in enumerate(pieces)]
+        chunks: list[Chunk] = []
+        for piece in splitter.split_text(text):
+            piece = piece.strip()
+            if not piece:
+                continue
+            tc = self._count(piece)
+            if self.min_tokens and tc < self.min_tokens:
+                continue  # фильтр мусора
+            chunks.append(Chunk(index=len(chunks), text=piece, token_count=tc))
+        return chunks

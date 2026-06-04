@@ -42,3 +42,27 @@ def test_factory_unknown_backend():
 def test_quantize_default_off():
     # По замерам torch dynamic int8 для BGE-M3 не снижает RSS -> default OFF (ADR-004).
     assert Settings().embedding_quantize is False
+
+
+def test_preview_chunking_dry_run_offline():
+    # Превью нарезки строит отдельный Chunker, переиспользуя length_fn боевого (offline).
+    from elion_dal.chunking.chunker import Chunker
+    from elion_dal.service.sync import IndexService
+
+    words = lambda s: len(s.split())  # noqa: E731
+    chunker = Chunker(chunk_tokens=10, chunk_overlap=2, length_fn=words)
+    svc = IndexService(None, None, None, chunker)
+
+    text = " ".join(f"слово{i}" for i in range(45))
+    out = svc.preview_chunking(text)
+    assert out["summary"]["count"] >= 4
+    assert out["summary"]["count"] == len(out["chunks"])
+    assert [c["index"] for c in out["chunks"]] == list(range(len(out["chunks"])))
+    assert out["summary"]["dropped"] == 0  # без min_tokens ничего не отсеяно
+
+    # Параметры-оверрайды: явный min_tokens отсеивает короткие хвосты.
+    out2 = svc.preview_chunking(text, chunk_tokens=10, chunk_overlap=2, min_tokens=8)
+    assert all(c["token_count"] >= 8 for c in out2["chunks"])
+    assert out2["summary"]["min_tokens"] == 8
+    # перенумерация после дропа
+    assert [c["index"] for c in out2["chunks"]] == list(range(len(out2["chunks"])))

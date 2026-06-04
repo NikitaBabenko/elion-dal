@@ -119,6 +119,59 @@ class DocReindexRow:
     chunks: list[ChunkRow]  # все дети документа в порядке (parent, index)
 
 
+@dataclass(slots=True)
+class DocSummary:
+    """Строка списка документов для браузера чанков в админке."""
+
+    doc_id: str
+    source_id: str
+    title: str
+    lang: str
+    published_ts: int
+    index_in_rag: bool
+    indexed: bool  # content_hash != "" — закоммичен в индекс
+    parent_count: int
+    chunk_count: int
+
+
+@dataclass(slots=True)
+class ChunkDetail:
+    """Дочерний чанк для просмотра (с длиной в токенах и chunk_id)."""
+
+    chunk_id: str
+    chunk_index: int
+    text: str
+    token_count: int
+
+
+@dataclass(slots=True)
+class ParentDetail:
+    """Секция-родитель с её детьми — для просмотра в админке."""
+
+    parent_id: str
+    section_id: str
+    heading_path: list[str]
+    ordinal: int
+    token_count: int
+    text: str
+    chunks: list[ChunkDetail]
+
+
+@dataclass(slots=True)
+class DocDetail:
+    """Документ с секциями(parents) и чанками — для просмотра в админке."""
+
+    doc_id: str
+    source_id: str
+    title: str
+    url: str
+    lang: str
+    published_ts: int
+    index_in_rag: bool
+    indexed: bool
+    parents: list[ParentDetail]
+
+
 class PgRepo:
     def __init__(self, dsn: str) -> None:
         self.engine = create_engine(dsn, pool_pre_ping=True, future=True)
@@ -328,6 +381,94 @@ class PgRepo:
             tp = s.execute(select(func.count()).select_from(Parent)).scalar_one()
             tc = s.execute(select(func.count()).select_from(Chunk)).scalar_one()
         return StoreStats(int(td), int(tp), int(tc), sources)
+
+    def list_documents(self, source_id: str | None = None) -> list[DocSummary]:
+        """Список документов с объёмами (parents/chunks) для браузера чанков.
+
+        В отличие от iter_documents_for_reindex здесь НЕ фильтруем по content_hash —
+        показываем и pending/незакоммиченные (флаг `indexed` это отражает)."""
+        with self._sm() as s:
+            q = select(Document)
+            if source_id:
+                q = q.where(Document.source_id == source_id)
+            docs = list(s.execute(q.order_by(Document.source_id, Document.title)).scalars())
+            parent_counts = dict(
+                s.execute(
+                    select(Parent.doc_id, func.count()).group_by(Parent.doc_id)
+                ).all()
+            )
+            chunk_counts = dict(
+                s.execute(
+                    select(Chunk.doc_id, func.count()).group_by(Chunk.doc_id)
+                ).all()
+            )
+        return [
+            DocSummary(
+                doc_id=d.doc_id,
+                source_id=d.source_id,
+                title=d.title,
+                lang=d.lang,
+                published_ts=int(d.published_ts or 0),
+                index_in_rag=bool(d.index_in_rag),
+                indexed=bool(d.content_hash),
+                parent_count=int(parent_counts.get(d.doc_id, 0)),
+                chunk_count=int(chunk_counts.get(d.doc_id, 0)),
+            )
+            for d in docs
+        ]
+
+    def get_document_detail(self, doc_id: str) -> DocDetail | None:
+        """Документ + его секции(parents, по ordinal) + чанки (по chunk_index)."""
+        with self._sm() as s:
+            d = s.get(Document, doc_id)
+            if d is None:
+                return None
+            parents = list(
+                s.execute(
+                    select(Parent).where(Parent.doc_id == doc_id).order_by(Parent.ordinal)
+                ).scalars()
+            )
+            chunks = list(
+                s.execute(
+                    select(Chunk)
+                    .where(Chunk.doc_id == doc_id)
+                    .order_by(Chunk.parent_id, Chunk.chunk_index)
+                ).scalars()
+            )
+            doc = DocDetail(
+                doc_id=d.doc_id,
+                source_id=d.source_id,
+                title=d.title,
+                url=d.url,
+                lang=d.lang,
+                published_ts=int(d.published_ts or 0),
+                index_in_rag=bool(d.index_in_rag),
+                indexed=bool(d.content_hash),
+                parents=[],
+            )
+        chunks_by_parent: dict[str, list[ChunkDetail]] = {}
+        for c in chunks:
+            chunks_by_parent.setdefault(c.parent_id, []).append(
+                ChunkDetail(
+                    chunk_id=c.chunk_id,
+                    chunk_index=c.chunk_index,
+                    text=c.text,
+                    token_count=int(c.token_count or 0),
+                )
+            )
+        for p in parents:
+            doc.parents.append(
+                ParentDetail(
+                    parent_id=p.parent_id,
+                    section_id=p.section_id,
+                    heading_path=list(p.heading_path or []),
+                    ordinal=int(p.ordinal or 0),
+                    token_count=int(p.token_count or 0),
+                    text=p.text,
+                    chunks=chunks_by_parent.get(p.parent_id, []),
+                )
+            )
+        return doc
 
     def iter_documents_for_reindex(
         self, source_id: str | None = None, batch: int = 200

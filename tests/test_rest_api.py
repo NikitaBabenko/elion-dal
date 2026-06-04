@@ -7,7 +7,14 @@ from fastapi.testclient import TestClient
 from elion_dal.config import Settings
 from elion_dal.service.rest_api import create_api
 from elion_dal.service.sync import ParentHit
-from elion_dal.store.pg_repo import SourceStats, StoreStats
+from elion_dal.store.pg_repo import (
+    ChunkDetail,
+    DocDetail,
+    DocSummary,
+    ParentDetail,
+    SourceStats,
+    StoreStats,
+)
 from elion_dal.store.settings_store import SettingView
 
 
@@ -55,6 +62,41 @@ class FakeIndex:
         self.processed.append(doc)
         counts.received += 1
         counts.indexed += 1
+
+    def live_top_k(self):
+        return 3
+
+    def list_documents(self, source_id=None):
+        return [DocSummary("d1", "s1", "Док", "ru", 0, True, True, 1, 2)]
+
+    def get_document_detail(self, doc_id):
+        if doc_id != "d1":
+            return None
+        return DocDetail(
+            "d1", "s1", "Док", "u", "ru", 0, True, True,
+            [
+                ParentDetail(
+                    "d1::0", "0", ["A"], 0, 2, "parent",
+                    [
+                        ChunkDetail("d1::0#0", 0, "child0", 1),
+                        ChunkDetail("d1::0#1", 1, "child1", 1),
+                    ],
+                )
+            ],
+        )
+
+    def preview_chunking(self, text, chunk_tokens=None, chunk_overlap=None,
+                         min_tokens=None, separator_mode=None):
+        words = text.split()
+        return {
+            "chunks": [{"index": 0, "text": text, "token_count": len(words)}],
+            "summary": {
+                "count": 1, "total_tokens": len(words), "avg_tokens": len(words),
+                "dropped": 0, "chunk_tokens": chunk_tokens or 400,
+                "chunk_overlap": chunk_overlap or 64, "min_tokens": min_tokens or 0,
+                "separator_mode": separator_mode or "structured",
+            },
+        }
 
     def settings_view(self):
         return [
@@ -172,6 +214,38 @@ def test_upsert_document_fallback_text():
         json={"doc_id": "x2", "source_id": "kb", "text": "плоский текст"},
     )
     assert r.status_code == 200
+
+
+def test_list_documents_endpoint():
+    c = app_open()
+    r = c.get("/api/v1/documents")
+    assert r.status_code == 200
+    docs = r.json()["documents"]
+    assert docs[0]["doc_id"] == "d1"
+    assert docs[0]["chunk_count"] == 2
+    assert docs[0]["indexed"] is True
+
+
+def test_document_detail_endpoint():
+    c = app_open()
+    r = c.get("/api/v1/documents/d1/detail")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["title"] == "Док"
+    assert body["parents"][0]["parent_id"] == "d1::0"
+    assert body["parents"][0]["chunks"][1]["chunk_index"] == 1
+    # отсутствующий документ -> 404
+    assert c.get("/api/v1/documents/nope/detail").status_code == 404
+
+
+def test_chunk_preview_endpoint():
+    c = app_open()
+    r = c.post("/api/v1/chunk-preview", json={"text": "привет мир", "chunk_tokens": 50})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["summary"]["count"] == 1
+    assert body["chunks"][0]["text"] == "привет мир"
+    assert body["summary"]["chunk_tokens"] == 50
 
 
 def test_get_and_update_settings():

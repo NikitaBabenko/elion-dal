@@ -98,6 +98,51 @@ def test_delete_by_doc(tmp_path):
     assert repo.delete_by_doc("nope") == (0, 0)
 
 
+def test_list_documents_and_detail(tmp_path):
+    repo = make_repo(tmp_path)
+    repo.ensure_source("s1")
+    repo.upsert_document(make_doc(), raw_text="секция")
+    repo.replace_parents_and_chunks("d1", [make_parent()])
+    repo.set_content_hash("d1", "abc")  # закоммичен -> indexed=True
+
+    docs = repo.list_documents()
+    assert len(docs) == 1
+    d = docs[0]
+    assert d.doc_id == "d1"
+    assert d.parent_count == 1
+    assert d.chunk_count == 2
+    assert d.indexed is True
+    assert d.index_in_rag is True
+
+    # фильтр по источнику
+    assert len(repo.list_documents("s1")) == 1
+    assert repo.list_documents("nope") == []
+
+    detail = repo.get_document_detail("d1")
+    assert detail is not None
+    assert detail.title == "Заголовок"
+    assert detail.indexed is True
+    assert len(detail.parents) == 1
+    p = detail.parents[0]
+    assert p.parent_id == "d1::0"
+    assert p.heading_path == ["A", "A.1"]
+    assert [c.chunk_index for c in p.chunks] == [0, 1]
+    assert p.chunks[0].text == "ребёнок1"
+    assert p.chunks[0].chunk_id == "d1::0#0"
+    assert p.chunks[0].token_count == 1
+    # отсутствующий документ
+    assert repo.get_document_detail("nope") is None
+
+
+def test_list_documents_pending_flag(tmp_path):
+    # Документ записан, но content_hash ещё не зафиксирован -> indexed=False (pending).
+    repo = make_repo(tmp_path)
+    repo.ensure_source("s1")
+    repo.upsert_document(make_doc(), raw_text="секция")
+    docs = repo.list_documents()
+    assert docs[0].indexed is False
+
+
 def test_list_sources_and_stats(tmp_path):
     repo = make_repo(tmp_path)
     repo.ensure_source("s1")

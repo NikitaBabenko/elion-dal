@@ -125,11 +125,25 @@ class IndexService:
     def _live_rerank_enabled(self) -> bool:
         return bool(self._cfg("rerank_enabled", self._d_rerank_enabled))
 
+    def _live_top_k(self) -> int:
+        return max(1, int(self._cfg("search_top_k", getattr(self._base, "search_top_k", 3) or 3)))
+
+    def live_top_k(self) -> int:
+        """Дефолтный top_k для вызовов без явного значения (читается на каждом запросе)."""
+        return self._live_top_k()
+
     def _apply_live_chunk_params(self) -> None:
         tokens = int(self._cfg("chunk_tokens", self.chunker.chunk_tokens))
         overlap = int(self._cfg("chunk_overlap", self.chunker.chunk_overlap))
         self.chunker.chunk_tokens = tokens
         self.chunker.chunk_overlap = min(overlap, max(0, tokens - 1))  # защита от overlap>=tokens
+        # getattr-фолбэки: chunker-подобные дубли в тестах могут не иметь новых полей.
+        self.chunker.min_tokens = max(
+            0, int(self._cfg("chunk_min_tokens", getattr(self.chunker, "min_tokens", 0)))
+        )
+        self.chunker.separator_mode = str(
+            self._cfg("chunk_separator_mode", getattr(self.chunker, "separator_mode", "structured"))
+        )
 
     def _get_reranker(self) -> Reranker | None:
         if self._reranker is None and self._reranker_factory is not None:
@@ -441,6 +455,82 @@ class IndexService:
 
     def get_stats(self) -> StoreStats:
         return self.pg.get_stats()
+
+    def list_documents(self, source_id: str | None = None):
+        """Список документов (с объёмами) для браузера чанков в админке."""
+        return self.pg.list_documents(source_id)
+
+    def get_document_detail(self, doc_id: str):
+        """Документ с его секциями(parents) и чанками — для просмотра в админке."""
+        return self.pg.get_document_detail(doc_id)
+
+    def preview_chunking(
+        self,
+        text: str,
+        chunk_tokens: int | None = None,
+        chunk_overlap: int | None = None,
+        min_tokens: int | None = None,
+        separator_mode: str | None = None,
+    ) -> dict:
+        """Dry-run нарезки: режем переданный текст, НЕ трогая индекс и self.chunker.
+
+        Недостающие параметры берём из live-конфига. Токенайзер и length_fn
+        переиспользуем из боевого чанкера (в тестах это offline-стаб, в проде —
+        BGE-M3 из lru_cache), чтобы счёт токенов совпадал с реальной индексацией.
+        """
+        model_name = getattr(self.chunker, "_model_name", "BAAI/bge-m3")
+        length_fn = getattr(self.chunker, "_length_fn", None)
+
+        # value = явный аргумент, иначе live-конфиг (cfg_key), иначе текущее поле чанкера (attr).
+        def pick(arg, cfg_key, attr, default):
+            if arg is not None:
+                return arg
+            return self._cfg(cfg_key, getattr(self.chunker, attr, default))
+
+        tokens = max(1, int(pick(chunk_tokens, "chunk_tokens", "chunk_tokens", 400)))
+        overlap = int(pick(chunk_overlap, "chunk_overlap", "chunk_overlap", 64))
+        overlap = min(max(0, overlap), tokens - 1)
+        min_tok = max(0, int(pick(min_tokens, "chunk_min_tokens", "min_tokens", 0)))
+        mode = str(pick(separator_mode, "chunk_separator_mode", "separator_mode", "structured"))
+
+        preview_chunker = Chunker(
+            chunk_tokens=tokens,
+            chunk_overlap=overlap,
+            model_name=model_name,
+            min_tokens=min_tok,
+            separator_mode=mode,
+            length_fn=length_fn,
+        )
+        # Сколько кусков отсеял фильтр: считаем без min_tokens и сравниваем.
+        kept = preview_chunker.split(text)
+        total_before = (
+            len(Chunker(
+                chunk_tokens=tokens,
+                chunk_overlap=overlap,
+                model_name=model_name,
+                min_tokens=0,
+                separator_mode=mode,
+                length_fn=length_fn,
+            ).split(text))
+            if min_tok
+            else len(kept)
+        )
+        total_tokens = sum(c.token_count for c in kept)
+        return {
+            "chunks": [
+                {"index": c.index, "text": c.text, "token_count": c.token_count} for c in kept
+            ],
+            "summary": {
+                "count": len(kept),
+                "total_tokens": total_tokens,
+                "avg_tokens": round(total_tokens / len(kept), 1) if kept else 0,
+                "dropped": max(0, total_before - len(kept)),
+                "chunk_tokens": tokens,
+                "chunk_overlap": overlap,
+                "min_tokens": min_tok,
+                "separator_mode": preview_chunker.separator_mode,
+            },
+        }
 
     def health(self) -> dict:
         qok = self.qdrant.ping()

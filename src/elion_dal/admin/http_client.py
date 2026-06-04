@@ -115,6 +115,39 @@ class HttpAdminClient:
         d = r.json()
         return d["documents_deleted"], d["chunks_deleted"]
 
+    # ---------- просмотр документов и чанков ----------
+    def list_documents(self, source_id: str = "") -> list[dict]:
+        params = {"source_id": source_id} if source_id else {}
+        r = self._client.get("/api/v1/documents", params=params)
+        r.raise_for_status()
+        return r.json().get("documents", [])
+
+    def get_document_detail(self, doc_id: str) -> dict:
+        r = self._client.get(f"/api/v1/documents/{doc_id}/detail")
+        r.raise_for_status()
+        return r.json()
+
+    def preview_chunking(
+        self,
+        text: str,
+        chunk_tokens: int | None = None,
+        chunk_overlap: int | None = None,
+        min_tokens: int | None = None,
+        separator_mode: str | None = None,
+    ) -> dict:
+        r = self._client.post(
+            "/api/v1/chunk-preview",
+            json={
+                "text": text,
+                "chunk_tokens": chunk_tokens,
+                "chunk_overlap": chunk_overlap,
+                "min_tokens": min_tokens,
+                "separator_mode": separator_mode,
+            },
+        )
+        r.raise_for_status()
+        return r.json()
+
     # ---------- настройки ----------
     def settings_view(self) -> list[SettingView]:
         r = self._client.get("/api/v1/settings")

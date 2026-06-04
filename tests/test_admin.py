@@ -53,6 +53,41 @@ class FakeIndex:
     def process_document(self, doc, counts):
         self.uploaded.append(doc)
 
+    def list_documents(self, source_id=""):
+        return [
+            {
+                "doc_id": "d1", "source_id": "s1", "title": "Док", "lang": "ru",
+                "published_ts": 0, "index_in_rag": True, "indexed": True,
+                "parent_count": 1, "chunk_count": 2,
+            }
+        ]
+
+    def get_document_detail(self, doc_id):
+        return {
+            "doc_id": doc_id, "source_id": "s1", "title": "Док", "url": "u", "lang": "ru",
+            "published_ts": 0, "index_in_rag": True, "indexed": True,
+            "parents": [
+                {
+                    "parent_id": "d1::0", "section_id": "0", "heading_path": ["A"],
+                    "ordinal": 0, "token_count": 2, "text": "p",
+                    "chunks": [
+                        {"chunk_id": "d1::0#0", "chunk_index": 0, "text": "c0", "token_count": 1}
+                    ],
+                }
+            ],
+        }
+
+    def preview_chunking(self, text, chunk_tokens=None, chunk_overlap=None,
+                         min_tokens=None, separator_mode=None):
+        return {
+            "chunks": [{"index": 0, "text": text, "token_count": 2}],
+            "summary": {
+                "count": 1, "total_tokens": 2, "avg_tokens": 2, "dropped": 0,
+                "chunk_tokens": chunk_tokens or 400, "chunk_overlap": chunk_overlap or 64,
+                "min_tokens": min_tokens or 0, "separator_mode": separator_mode or "structured",
+            },
+        }
+
     def settings_view(self):
         return [
             SettingView("search_parent_fanout", "Fan-out", "live", "int", 5, False),
@@ -89,6 +124,39 @@ def test_settings_post_updates_index():
     assert idx.updated_settings["search_parent_fanout"] == "7"
     assert idx.updated_settings["rerank_enabled"] == "true"  # чекбокс отмечен
     assert idx.updated_settings["embedding_quantize"] == "false"  # bool не отмечен -> false
+
+
+def test_dashboard_has_chunk_sections():
+    t = client().get("/").text
+    assert "Превью нарезки" in t
+    assert "Документы и чанки" in t
+    # JS-функции просмотра/превью присутствуют
+    assert "doPreview" in t
+    assert "loadDocs" in t
+    assert "showChunks" in t
+
+
+def test_api_documents_proxy():
+    r = client().get("/api/documents")
+    assert r.status_code == 200
+    data = r.json()
+    assert data[0]["doc_id"] == "d1"
+    assert data[0]["chunk_count"] == 2
+
+
+def test_api_document_detail_proxy():
+    r = client().get("/api/documents/d1/detail")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["parents"][0]["chunks"][0]["chunk_id"] == "d1::0#0"
+
+
+def test_api_chunk_preview_proxy():
+    r = client().post("/api/chunk-preview", data={"text": "привет мир", "chunk_tokens": "50"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["summary"]["count"] == 1
+    assert body["summary"]["chunk_tokens"] == 50
 
 
 def test_api_stats():
