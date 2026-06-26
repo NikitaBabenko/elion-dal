@@ -2,7 +2,10 @@
 
     python scripts/load_local.py <путь_к.jsonl> [source_id] [limit]
 
-Поля строки JSONL: обязательны doc_id и text; опц. title, url, lang, published_ts.
+Поддерживает два формата:
+1. Старый: поля doc_id и text на верхнем уровне.
+2. Новый (docs_filtered.jsonl): текст в поле text.normalized.
+
 Сервер должен быть запущен (python -m elion_dal.service.server, порт 8080).
 """
 
@@ -11,6 +14,15 @@ import sys
 import urllib.request
 
 BASE = "http://localhost:8080"
+
+
+def extract_text(doc: dict) -> str:
+    """Извлекает текст из документа, поддерживая оба формата."""
+    # Новый формат: text.normalized
+    if "text" in doc and isinstance(doc["text"], dict):
+        return doc["text"].get("normalized", "")
+    # Старый формат: text на верхнем уровне
+    return doc.get("text", "")
 
 
 def main() -> int:
@@ -30,18 +42,27 @@ def main() -> int:
             if not line:
                 continue
             d = json.loads(line)
-            if not d.get("text", "").strip():
+            text = extract_text(d)
+            if not text.strip():
                 continue
+
+            # Извлечение метаданных для нового формата
+            doc_id = d.get("doc_id", "")
+            title = d.get("document", {}).get("title", "") or d.get("title", "")
+            url = d.get("source", {}).get("display_url", "") or d.get("url", "")
+            published_ts = d.get("lifecycle", {}).get("published_ts", 0) or d.get("published_ts", 0) or 0
+            content_hash = d.get("hashes", {}).get("normalized_text_sha256", "") or d.get("content_hash", "")
+
             payload = {
-                "doc_id": d["doc_id"],
+                "doc_id": doc_id,
                 "source_id": source,
-                "url": d.get("url", ""),
-                "title": d.get("title", ""),
+                "url": url,
+                "title": title,
                 "lang": d.get("lang", "ru"),
-                "published_ts": d.get("published_ts", 0) or 0,
-                "content_hash": d.get("content_hash", ""),
-                "index_in_rag": True,
-                "text": d["text"],
+                "published_ts": published_ts,
+                "content_hash": content_hash,
+                "index_in_rag": d.get("index_in_rag", True),
+                "text": text,
             }
             req = urllib.request.Request(
                 BASE + "/api/v1/documents",
@@ -53,7 +74,8 @@ def main() -> int:
                 r = json.loads(urllib.request.urlopen(req, timeout=180).read())
                 ok += r.get("indexed", 0)
                 fail += r.get("failed", 0)
-                print(f"[{i}] {d.get('title', '')[:48]:48} chunks={r.get('chunks_upserted', 0)}")
+                chunks = r.get("chunks_upserted", 0)
+                print(f"[{i}] {title[:48]:48} chunks={chunks}")
             except Exception as e:  # noqa: BLE001 — простой скрипт, печатаем и едем дальше
                 fail += 1
                 print(f"[{i}] FAIL {e}")
