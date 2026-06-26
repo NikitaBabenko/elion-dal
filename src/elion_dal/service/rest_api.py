@@ -8,7 +8,8 @@
 - GET    /healthz                    — health (открыт)
 - POST   /api/v1/search               — гибридный поиск, top-k родителей
 - POST   /api/v1/documents            — upsert документа (для админки upload)
-- POST   /api/v1/sources/{source_id}/reindex — пересобрать индекс Qdrant из PG (body: {"recreate": bool})
+# - POST   /api/v1/sources/{source_id}/reindex
+#   — пересобрать индекс Qdrant из PG (body: {"recreate": bool})
 - DELETE /api/v1/sources/{source_id}  — удалить источник
 - DELETE /api/v1/documents/{doc_id}   — удалить документ
 - GET    /api/v1/sources              — список источников + объёмы

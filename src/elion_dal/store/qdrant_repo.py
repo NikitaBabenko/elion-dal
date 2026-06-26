@@ -209,8 +209,13 @@ class QdrantRepo:
             "delete_by_source",
         )
 
-    def _filter(self, source_ids: Sequence[str], min_published_ts: int, academic_year: int | None = None,
-    is_active: bool | None = None,) -> models.Filter | None:
+    def _filter(
+        self,
+        source_ids: Sequence[str],
+        min_published_ts: int,
+        academic_year: int | None = None,
+        is_active: bool | None = None,
+    ) -> models.Filter | None:
         must: list = []
         if source_ids:
             must.append(

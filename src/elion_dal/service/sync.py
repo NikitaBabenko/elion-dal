@@ -307,7 +307,13 @@ class IndexService:
             return False
 
     def search(
-        self, query: str, top_k: int, source_ids: list[str], min_published_ts: int, academic_year: int | None = None, is_active: bool | None = None,
+        self,
+        query: str,
+        top_k: int,
+        source_ids: list[str],
+        min_published_ts: int,
+        academic_year: int | None = None,
+        is_active: bool | None = None,
     ) -> list[ParentHit]:
         embedding = self.provider.embed_query(query)
         limit = top_k * self._live_parent_fanout()
