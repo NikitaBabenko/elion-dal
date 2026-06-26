@@ -6,14 +6,22 @@ os.environ["PG_DSN"] = "sqlite:///./elion_dev.db"
 os.environ["QDRANT_URL"] = "./qdrant_local"
 
 from elion_dal.service.bootstrap import build_index_service
-from elion_dal.store.pg_repo import DocInput, SectionInput
 from elion_dal.service.sync import UpsertCounts
+from elion_dal.store.pg_repo import DocInput, PgRepo, SectionInput
+
+
+def ensure_db():
+    """Create database tables if they don't exist."""
+    repo = PgRepo(os.environ["PG_DSN"])
+    repo.create_all()
+    return repo
 
 
 def test_academic_year_filter():
     """Test filtering by academic year."""
     print("\n=== Test: filtering by academic_year ===")
-    index = build_index_service(ensure=False)
+    ensure_db()
+    index = build_index_service(ensure=True)
     doc_id = "test_filter_2026"
 
     try:
@@ -43,9 +51,26 @@ def test_academic_year_filter():
         print(f"Document loaded: {counts.indexed}")
 
         # Test filtering
-        hits_all = index.search(query="test", top_k=5, source_ids=[], min_published_ts=0)
-        hits_2026 = index.search(query="test", top_k=5, source_ids=[], min_published_ts=0, academic_year=2026)
-        hits_2025 = index.search(query="test", top_k=5, source_ids=[], min_published_ts=0, academic_year=2025)
+        hits_all = index.search(
+            query="test",
+            top_k=5,
+            source_ids=[],
+            min_published_ts=0
+        )
+        hits_2026 = index.search(
+            query="test",
+            top_k=5,
+            source_ids=[],
+            min_published_ts=0,
+            academic_year=2026,
+        )
+        hits_2025 = index.search(
+            query="test",
+            top_k=5,
+            source_ids=[],
+            min_published_ts=0,
+            academic_year=2025
+        )
 
         print(f"No filter: {len(hits_all)}")
         print(f"Filter 2026: {len(hits_2026)}")
@@ -67,7 +92,8 @@ def test_academic_year_filter():
 def test_is_active_filter():
     """Test filtering by active status."""
     print("\n=== Test: filtering by is_active ===")
-    index = build_index_service(ensure=False)
+    ensure_db()
+    index = build_index_service(ensure=True)
     doc_id = "test_filter_inactive"
 
     try:
@@ -97,9 +123,26 @@ def test_is_active_filter():
         print(f"Document loaded: {counts.indexed}")
 
         # Test filtering
-        hits_all = index.search(query="inactive", top_k=5, source_ids=[], min_published_ts=0)
-        hits_active = index.search(query="inactive", top_k=5, source_ids=[], min_published_ts=0, is_active=True)
-        hits_inactive = index.search(query="inactive", top_k=5, source_ids=[], min_published_ts=0, is_active=False)
+        hits_all = index.search(
+            query="inactive",
+            top_k=5,
+            source_ids=[],
+            min_published_ts=0
+        )
+        hits_active = index.search(
+            query="inactive",
+            top_k=5,
+            source_ids=[],
+            min_published_ts=0,
+            is_active=True
+        )
+        hits_inactive = index.search(
+            query="inactive",
+            top_k=5,
+            source_ids=[],
+            min_published_ts=0,
+            is_active=False
+        )
 
         print(f"No filter: {len(hits_all)}")
         print(f"Only active: {len(hits_active)}")
@@ -121,7 +164,8 @@ def test_is_active_filter():
 def test_none_filter_behavior():
     """Test that None does not apply any filter."""
     print("\n=== Test: None = no filter ===")
-    index = build_index_service(ensure=False)
+    ensure_db()
+    index = build_index_service(ensure=True)
     doc_id = "test_filter_none"
 
     try:
@@ -150,8 +194,19 @@ def test_none_filter_behavior():
         index.process_document(doc, counts)
 
         query = "document for testing"
-        hits_none = index.search(query=query, top_k=5, source_ids=[], min_published_ts=0, is_active=None)
-        hits_all = index.search(query=query, top_k=5, source_ids=[], min_published_ts=0)
+        hits_none = index.search(
+            query=query,
+            top_k=5,
+            source_ids=[],
+            min_published_ts=0,
+            is_active=None
+        )
+        hits_all = index.search(
+            query=query,
+            top_k=5,
+            source_ids=[],
+            min_published_ts=0
+        )
 
         print(f"With is_active=None: {len(hits_none)}")
         print(f"No filter: {len(hits_all)}")

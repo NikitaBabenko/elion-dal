@@ -95,7 +95,16 @@ class FakeQdrant:
     def delete_by_source(self, source_id):
         pass
 
-    def search(self, embedding, limit, source_ids=(), min_published_ts=0, prefetch_limit=None):
+    def search(
+        self,
+        embedding,
+        limit,
+        source_ids=(),
+        min_published_ts=0,
+        prefetch_limit=None,
+        academic_year=None,
+        is_active=None,
+    ):
         self.last_limit = limit
         self.last_prefetch = prefetch_limit
         return self.search_hits[:limit]
