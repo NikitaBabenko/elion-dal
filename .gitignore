@@ -10,6 +10,8 @@ dist/
 
 # Env / secrets
 .env
+.env.local
+.env.*.local
 
 # Handoff: standalone-скрипты с зашитыми токенами для команд —
 # не пушим в публичный репо. Файлы передаются коллегам напрямую.
@@ -35,6 +37,12 @@ qdrant_*/
 *.sqlite3
 # Папка локального smoke-прогона (SQLite + embedded Qdrant + временные скрипты)
 .local_run/
+
+# Data files from group 1 (KB)
+*.jsonl
+*.png
+chunk_*.png
+data/
 
 # IDE / OS
 .idea/

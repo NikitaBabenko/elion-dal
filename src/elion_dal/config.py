@@ -84,6 +84,12 @@ class Settings(BaseSettings):
     # bge-m3-токенайзер даёт стабильное сегментирование независимо от бэкенда эмбеддингов.
     chunk_tokenizer_model: str = "BAAI/bge-m3"
 
+    # Санация данных (очистка от проблемных Unicode-символов)
+    sanitize_enabled: bool = True          # Включить санацию
+    sanitize_normalize_form: str = "NFKC"  # Форма нормализации Unicode
+    sanitize_strict_mode: bool = False     # Падать при ошибках или пропускать
+    sanitize_log_warnings: bool = True     # Логировать замены
+
     # Поиск
     search_top_k: int = 3
     search_prefetch: int = 20
