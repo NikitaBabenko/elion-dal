@@ -314,6 +314,7 @@ class IndexService:
         min_published_ts: int,
         academic_year: int | None = None,
         is_active: bool | None = None,
+        return_chunk: bool = True,
     ) -> list[ParentHit]:
         embedding = self.provider.embed_query(query)
         limit = top_k * self._live_parent_fanout()
@@ -357,8 +358,8 @@ class IndexService:
                     title=rec.title,
                     url=rec.url,
                     heading_path=rec.heading_path,
-                    text=rec.text,
-                    matched_child=child_text,
+                    text=rec.text,                          # ← родительский текст (сохраняем)
+                    matched_child=child_text,               # ← текст чанка
                     score=rrf,
                     dense_score=dense_map.get(child_chunk_id, 0.0),
                 )
@@ -373,6 +374,12 @@ class IndexService:
             rescored = True
         if rescored:
             candidates.sort(key=lambda c: c.score, reverse=True)
+
+        # Если запрошен чанк — подменяем текст родителя на текст чанка
+        if return_chunk:
+            for hit in candidates:
+                hit.text = hit.matched_child  # заменяем родителя на чанк
+
         return candidates[:top_k]
 
     def reindex_source(self, source_id: str, recreate: bool = False) -> dict:

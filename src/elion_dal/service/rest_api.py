@@ -70,6 +70,7 @@ class SearchIn(BaseModel):
     top_k: int = 0
     source_ids: list[str] = Field(default_factory=list)
     min_published_ts: int = 0
+    return_chunk: bool = True  # по умолчанию — чанк
 
 
 class SettingsUpdateIn(BaseModel):
@@ -145,6 +146,7 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
                 top_k=top_k,
                 source_ids=req.source_ids,
                 min_published_ts=req.min_published_ts,
+                return_chunk=req.return_chunk,
             )
         except Exception as e:  # noqa: BLE001 — деградируем мягко, не голым 500
             # Полный traceback (с деталями бэкенда) — в логи; клиенту — честный 503 с

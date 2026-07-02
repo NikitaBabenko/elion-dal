@@ -74,6 +74,7 @@ message SearchRequest {
   int64 min_published_ts = 4;       // 0 -> без фильтра по дате
   int32 academic_year = 5;          // фильтр по учебному году (2026), 0 = без фильтра
   optional bool is_active = 6;               // true=активные, false=неактивные, не задано=без фильтра
+  bool return_chunk = 7;  // false=родитель, true=чанк (по умолчанию true в логике)
 }
 
 // Один Hit = РОДИТЕЛЬ (секция), схлопнутый из лучших дочерних попаданий.
