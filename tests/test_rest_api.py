@@ -41,7 +41,7 @@ class FakeIndex:
     def list_sources(self):
         return self.get_stats().sources
 
-    def search(self, query, top_k, source_ids, min_published_ts):
+    def search(self, query, top_k, source_ids, min_published_ts, return_chunk: bool = True):
         return [
             ParentHit(
                 parent_id="d1::0", doc_id="d1", source_id="s1", title="t", url="u",

@@ -1,18 +1,18 @@
 """Тесты для модуля санации данных."""
 
-import pytest
 import json
-import tempfile
 from pathlib import Path
 
+import pytest
+
 from elion_dal.sanitizers import (
-    sanitize_text,
-    sanitize_record,
     sanitize_jsonl_file,
+    sanitize_record,
+    sanitize_text,
 )
 from elion_dal.sanitizers.factory import (
-    sanitize_text_with_config,
     sanitize_record_with_config,
+    sanitize_text_with_config,
 )
 
 
@@ -152,7 +152,7 @@ class TestSanitizeJSONL:
         # Проверяем результат
         assert count == 2
 
-        with open(output_file, "r", encoding="utf-8") as f:
+        with open(output_file, encoding="utf-8") as f:
             lines = f.readlines()
 
         assert len(lines) == 2
@@ -176,7 +176,7 @@ class TestSanitizeJSONL:
 
         assert count == 1
 
-        with open(input_file, "r", encoding="utf-8") as f:
+        with open(input_file, encoding="utf-8") as f:
             data = json.loads(f.readline())
 
         assert data["text"] == "Hello\nWorld"
@@ -197,7 +197,7 @@ class TestSanitizeJSONL:
         # Должны обработаться только валидные строки
         assert count == 2
 
-        with open(output_file, "r", encoding="utf-8") as f:
+        with open(output_file, encoding="utf-8") as f:
             lines = f.readlines()
 
         assert len(lines) == 2
@@ -251,8 +251,8 @@ class TestRealFile:
         assert output_path.exists()
 
         # Проверяем, что все строки валидны
-        with open(output_path, "r", encoding="utf-8") as f:
-            for i, line in enumerate(f, 1):
+        with open(output_path, encoding="utf-8") as f:
+            for _i, line in enumerate(f, 1):
                 if line.strip():
                     data = json.loads(line)
                     assert isinstance(data, dict)

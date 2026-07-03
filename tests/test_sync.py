@@ -18,6 +18,8 @@ from elion_dal.store.qdrant_repo import SearchHit
 class FakePg:
     def __init__(self):
         self.hashes: dict[str, str] = {}
+        self.canonical_hashes: dict[str, str] = {}
+        self.canonical_doc_ids: dict[str, str] = {}
         self.docs: dict[str, DocInput] = {}
         self.parents: dict[str, list] = {}
         self.sources: set[str] = set()
@@ -29,12 +31,41 @@ class FakePg:
     def get_content_hash(self, doc_id):
         return self.hashes.get(doc_id)
 
+    def get_content_hash_by_canonical(self, canonical_doc_id):
+        """Получить content_hash по canonical_doc_id."""
+        # Сначала ищем в canonical_hashes
+        if canonical_doc_id in self.canonical_hashes:
+            return self.canonical_hashes[canonical_doc_id]
+        # Если нет, ищем через doc_id
+        doc_id = self.canonical_doc_ids.get(canonical_doc_id)
+        if doc_id:
+            return self.hashes.get(doc_id)
+        return None
+
+    def get_doc_id_by_canonical(self, canonical_doc_id):
+        """Получить doc_id по canonical_doc_id."""
+        return self.canonical_doc_ids.get(canonical_doc_id)
+
     def upsert_document(self, doc, raw_text):
         # Хеш здесь НЕ трогаем (как в реальном PgRepo) — только set_content_hash.
         self.docs[doc.doc_id] = doc
+        # Если есть canonical_doc_id, сохраняем соответствие
+        if doc.canonical_doc_id:
+            self.canonical_doc_ids[doc.canonical_doc_id] = doc.doc_id
+            # Если хеш уже есть, обновляем canonical_hashes
+            if doc.content_hash:
+                self.canonical_hashes[doc.canonical_doc_id] = doc.content_hash
 
     def set_content_hash(self, doc_id, content_hash):
         self.hashes[doc_id] = content_hash
+        # Если у документа есть canonical_doc_id, обновляем и canonical_hashes
+        doc = self.docs.get(doc_id)
+        # Если есть canonical_doc_id — обновляем canonical_hashes
+        if doc and doc.canonical_doc_id:
+            self.canonical_hashes[doc.canonical_doc_id] = content_hash
+        # Если нет canonical_doc_id — используем doc_id как fallback
+        else:
+            self.canonical_hashes[doc_id] = content_hash
 
     def replace_parents_and_chunks(self, doc_id, parents):
         self.parents[doc_id] = list(parents)
@@ -321,7 +352,7 @@ def test_search_collapses_children_to_parents():
             chunk_id=f"{pb}#1", parent_id=pb, doc_id="d1", source_id="s1", text="d", score=0.5
         ),
     ]
-    hits = svc.search("q", top_k=2, source_ids=[], min_published_ts=0)
+    hits = svc.search("q", top_k=2, source_ids=[], min_published_ts=0, return_chunk=False)
     assert [h.parent_id for h in hits] == [pb, pa]  # уникальные родители в порядке RRF
     assert hits[0].score == 0.9
     assert hits[0].matched_child == "c"  # сниппет ребёнка-победителя

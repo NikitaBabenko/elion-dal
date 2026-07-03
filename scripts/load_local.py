@@ -10,9 +10,9 @@
 """
 
 import json
+import logging
 import sys
 import time
-import logging
 import urllib.request
 
 # Настройка логирования
@@ -45,7 +45,9 @@ def extract_text(doc: dict) -> str:
 
             # Логируем только если замена заняла время или были изменения
             if sanitized != raw_text:
-                logger.debug(f"Санация текста: заменено символов (длина {len(raw_text)}) за {elapsed:.4f}с")
+                logger.debug(
+                    f"Санация текста: заменено символов (длина {len(raw_text)}) за {elapsed:.4f}с"
+                )
             elif elapsed > 0.01:
                 logger.debug(f"Проверка текста заняла {elapsed:.4f}с (без изменений)")
 
@@ -106,7 +108,10 @@ def main() -> int:
                     academic_year = lifecycle.get("academic_year")  # может быть None
                     is_active = lifecycle.get("is_active", True)
 
-                    content_hash = d.get("hashes", {}).get("normalized_text_sha256", "") or d.get("content_hash", "")
+                    content_hash = (
+                        d.get("hashes", {}).get("normalized_text_sha256", "")
+                        or d.get("content_hash", "")
+                    )
 
                     # Формируем базовый payload
                     payload = {

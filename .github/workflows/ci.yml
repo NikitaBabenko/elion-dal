@@ -16,6 +16,14 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - name: Cache Hugging Face models
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/huggingface
+          key: ${{ runner.os }}-hf-models-${{ hashFiles('**/requirements.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-hf-models-
+
       - name: Install deps
         run: |
           python -m pip install -U pip

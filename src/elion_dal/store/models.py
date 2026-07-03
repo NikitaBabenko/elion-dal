@@ -61,6 +61,7 @@ class Document(Base):
     source_id: Mapped[str] = mapped_column(
         String(128), ForeignKey("sources.source_id", ondelete="CASCADE"), index=True
     )
+    canonical_doc_id: Mapped[str] = mapped_column(String(256), index=True, nullable=True)
     url: Mapped[str] = mapped_column(Text, default="")
     title: Mapped[str] = mapped_column(Text, default="")
     lang: Mapped[str] = mapped_column(String(16), default="ru")

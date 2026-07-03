@@ -1,8 +1,8 @@
 """Очистка текста от проблемных Unicode-символов."""
 
-import unicodedata
 import logging
-from typing import Any, Dict, List, Optional
+import unicodedata
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ DEFAULT_REPLACEMENTS = {
 def sanitize_text(
     text: str,
     normalize_form: str = "NFKC",
-    extra_replacements: Optional[Dict[str, str]] = None,
+    extra_replacements: dict[str, str] | None = None,
 ) -> str:
     """
     Очистка строки от проблемных Unicode-символов.
@@ -79,10 +79,10 @@ def sanitize_text(
 
 
 def sanitize_record(
-    record: Dict[str, Any],
+    record: dict[str, Any],
     normalize_form: str = "NFKC",
-    extra_replacements: Optional[Dict[str, str]] = None,
-) -> Dict[str, Any]:
+    extra_replacements: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """
     Рекурсивная очистка всех строковых полей в JSON-записи.
 
@@ -112,9 +112,9 @@ def sanitize_record(
 
 def sanitize_jsonl_file(
     input_path: str,
-    output_path: Optional[str] = None,
+    output_path: str | None = None,
     normalize_form: str = "NFKC",
-    extra_replacements: Optional[Dict[str, str]] = None,
+    extra_replacements: dict[str, str] | None = None,
     strict_mode: bool = False,
 ) -> int:
     """
@@ -136,7 +136,7 @@ def sanitize_jsonl_file(
     processed = 0
     errors = []
 
-    with open(input_path, "r", encoding="utf-8") as f:
+    with open(input_path, encoding="utf-8") as f:
         lines = f.readlines()
 
     sanitized_lines = []
@@ -161,7 +161,7 @@ def sanitize_jsonl_file(
                 logger.warning(f"Строка {i} была исправлена: {e}")
             except json.JSONDecodeError as e2:
                 if strict_mode:
-                    raise ValueError(f"Не удалось исправить строку {i}: {e2}")
+                    raise ValueError(f"Не удалось исправить строку {i}: {e2}") from e2
                 else:
                     logger.error(f"Невалидный JSON в строке {i}, строка пропущена: {e2}")
                     errors.append({"line": i, "error": str(e2)})

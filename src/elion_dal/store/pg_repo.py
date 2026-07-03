@@ -43,6 +43,7 @@ class DocInput:
     sections: list[SectionInput] = field(default_factory=list)
     academic_year: int | None = None
     is_active: bool | None = None
+    canonical_doc_id: str = ""
 
 @dataclass(slots=True)
 class ParentBuild:
@@ -212,6 +213,20 @@ class PgRepo:
                 select(Document.content_hash).where(Document.doc_id == doc_id)
             ).scalar_one_or_none()
 
+    def get_content_hash_by_canonical(self, canonical_doc_id: str) -> str | None:
+        """Получить content_hash по canonical_doc_id."""
+        with self._sm() as s:
+            return s.execute(
+                select(Document.content_hash).where(Document.canonical_doc_id == canonical_doc_id)
+            ).scalar_one_or_none()
+
+    def get_doc_id_by_canonical(self, canonical_doc_id: str) -> str | None:
+        """Получить doc_id по canonical_doc_id."""
+        with self._sm() as s:
+            return s.execute(
+                select(Document.doc_id).where(Document.canonical_doc_id == canonical_doc_id)
+            ).scalar_one_or_none()
+
     def upsert_document(self, doc: DocInput, raw_text: str) -> None:
         """Записать мету документа. content_hash НЕ трогаем здесь — он
         фиксируется отдельно через set_content_hash() только после успешной
@@ -231,6 +246,7 @@ class PgRepo:
                         content_hash="",  # pending — выставится после успеха
                         raw_text=raw_text,
                         index_in_rag=doc.index_in_rag,
+                        canonical_doc_id=doc.canonical_doc_id,
                     )
                 )
             else:
@@ -241,6 +257,7 @@ class PgRepo:
                 existing.published_ts = doc.published_ts
                 existing.raw_text = raw_text
                 existing.index_in_rag = doc.index_in_rag
+                existing.canonical_doc_id = doc.canonical_doc_id
                 # content_hash намеренно не обновляем здесь.
 
     def set_content_hash(self, doc_id: str, content_hash: str) -> None:

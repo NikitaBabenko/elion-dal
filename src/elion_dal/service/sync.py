@@ -168,10 +168,19 @@ class IndexService:
             counts.blank += 1
             return
 
-        prev_hash = self.pg.get_content_hash(doc.doc_id)
-        if prev_hash and prev_hash == doc.content_hash:
-            counts.skipped += 1
-            return
+        # Дедупликация по canonical_doc_id + content_hash
+        canonical_id = doc.canonical_doc_id or doc.doc_id  # fallback на doc_id
+        prev_hash = self.pg.get_content_hash_by_canonical(canonical_id)
+        if prev_hash:
+            if prev_hash == doc.content_hash:
+                counts.skipped += 1
+                return
+            else:
+                # содержимое изменилось — удаляем старые чанки
+                old_doc_id = self.pg.get_doc_id_by_canonical(canonical_id)
+                if old_doc_id:
+                    self.qdrant.delete_by_doc(old_doc_id)
+                    self.pg.delete_by_doc(old_doc_id)
 
         self.pg.upsert_document(doc, raw_text)
         self._apply_live_chunk_params()

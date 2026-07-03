@@ -55,6 +55,7 @@ message Document {
   bool index_in_rag = 9;      // false для бланков-на-скачивание (не индексируются)
   repeated Section sections = 10;  // родители; предпочтительный путь
   string text = 5;            // fallback для документов без секций (весь doc = 1 родитель)
+  string canonical_doc_id = 11; // устойчивый ID документа
 }
 
 message UpsertResult {

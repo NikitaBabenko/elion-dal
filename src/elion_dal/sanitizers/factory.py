@@ -1,10 +1,11 @@
 """Фабрика для создания санитайзеров с настройками из config."""
 
-from typing import Optional, Dict, Any
-from .unicode import sanitize_text, sanitize_record, sanitize_jsonl_file
+from typing import Any
+
+from .unicode import sanitize_jsonl_file, sanitize_record, sanitize_text
 
 
-def get_sanitizer_config() -> Dict[str, Any]:
+def get_sanitizer_config() -> dict[str, Any]:
     """
     Получить настройки санации из глобальной конфигурации.
 
@@ -30,7 +31,7 @@ def get_sanitizer_config() -> Dict[str, Any]:
         }
 
 
-def get_sanitizer() -> Dict[str, Any]:
+def get_sanitizer() -> dict[str, Any]:
     """
     Получить санитайзер с настройками.
     Алиас для get_sanitizer_config() для обратной совместимости.
@@ -46,7 +47,7 @@ def sanitize_text_with_config(text: str) -> str:
     return sanitize_text(text, normalize_form=config["normalize_form"])
 
 
-def sanitize_record_with_config(record: Dict) -> Dict:
+def sanitize_record_with_config(record: dict) -> dict:
     """Очистка записи с настройками из config."""
     config = get_sanitizer_config()
     if not config["enabled"]:
@@ -54,7 +55,7 @@ def sanitize_record_with_config(record: Dict) -> Dict:
     return sanitize_record(record, normalize_form=config["normalize_form"])
 
 
-def sanitize_jsonl_file_with_config(input_path: str, output_path: Optional[str] = None) -> int:
+def sanitize_jsonl_file_with_config(input_path: str, output_path: str | None = None) -> int:
     """Очистка JSONL-файла с настройками из config."""
     config = get_sanitizer_config()
     if not config["enabled"]:
@@ -62,7 +63,7 @@ def sanitize_jsonl_file_with_config(input_path: str, output_path: Optional[str] 
         import shutil
         shutil.copy2(input_path, output_path or input_path)
         # Подсчет строк
-        with open(input_path, "r", encoding="utf-8") as f:
+        with open(input_path, encoding="utf-8") as f:
             return sum(1 for _ in f)
     return sanitize_jsonl_file(
         input_path,
