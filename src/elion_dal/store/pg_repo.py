@@ -8,16 +8,21 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 from sqlalchemy import create_engine, delete, func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..chunking.chunker import Chunk as TextChunk
-from .models import Base, Chunk, Document, Parent, Source, chunk_id
+from .models import Base, Chunk, Document, Parent, Source, chunk_id, point_id
 
 
 def sha256(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+
+def _ts(dt: datetime | None) -> int:
+    return int(dt.timestamp()) if dt else 0
 
 
 @dataclass(slots=True)
@@ -487,6 +492,91 @@ class PgRepo:
                 )
             )
         return doc
+
+    def export_chunks(self, source_id: str | None = None) -> dict:
+        with self._sm() as s:
+            q = (
+                select(Source, Document, Parent, Chunk)
+                .select_from(Chunk)
+                .join(Parent, Parent.parent_id == Chunk.parent_id)
+                .join(Document, Document.doc_id == Chunk.doc_id)
+                .join(Source, Source.source_id == Document.source_id)
+            )
+            if source_id:
+                q = q.where(Document.source_id == source_id)
+            rows = list(
+                s.execute(
+                    q.order_by(
+                        Document.source_id,
+                        Document.title,
+                        Parent.ordinal,
+                        Chunk.chunk_index,
+                    )
+                ).all()
+            )
+
+        chunks: list[dict] = []
+        doc_ids: set[str] = set()
+        parent_ids: set[str] = set()
+        source_ids: set[str] = set()
+        for src, doc, parent, chunk in rows:
+            source_ids.add(src.source_id)
+            doc_ids.add(doc.doc_id)
+            parent_ids.add(parent.parent_id)
+            chunk_index = int(chunk.chunk_index or 0)
+            chunks.append(
+                {
+                    "source": {
+                        "source_id": src.source_id,
+                        "name": src.name or src.source_id,
+                        "last_indexed_ts": _ts(src.last_indexed_at),
+                    },
+                    "document": {
+                        "doc_id": doc.doc_id,
+                        "canonical_doc_id": doc.canonical_doc_id or "",
+                        "url": doc.url,
+                        "title": doc.title,
+                        "lang": doc.lang,
+                        "published_ts": int(doc.published_ts or 0),
+                        "content_hash": doc.content_hash,
+                        "index_in_rag": bool(doc.index_in_rag),
+                        "indexed": bool(doc.content_hash),
+                        "created_ts": _ts(doc.created_at),
+                        "updated_ts": _ts(doc.updated_at),
+                    },
+                    "parent": {
+                        "parent_id": parent.parent_id,
+                        "section_id": parent.section_id,
+                        "heading_path": list(parent.heading_path or []),
+                        "url": parent.url,
+                        "ordinal": int(parent.ordinal or 0),
+                        "token_count": int(parent.token_count or 0),
+                        "text": parent.text,
+                        "created_ts": _ts(parent.created_at),
+                    },
+                    "chunk": {
+                        "chunk_id": chunk.chunk_id,
+                        "point_id": point_id(parent.parent_id, chunk_index),
+                        "chunk_index": chunk_index,
+                        "text": chunk.text,
+                        "token_count": int(chunk.token_count or 0),
+                        "content_hash": chunk.content_hash,
+                        "created_ts": _ts(chunk.created_at),
+                    },
+                }
+            )
+        return {
+            "schema": "elion-dal.chunks-export.v1",
+            "generated_at": datetime.now(UTC).isoformat(),
+            "source_id": source_id or "",
+            "counts": {
+                "sources": len(source_ids),
+                "documents": len(doc_ids),
+                "parents": len(parent_ids),
+                "chunks": len(chunks),
+            },
+            "chunks": chunks,
+        }
 
     def iter_documents_for_reindex(
         self, source_id: str | None = None, batch: int = 200

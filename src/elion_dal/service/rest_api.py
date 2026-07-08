@@ -16,6 +16,7 @@
 - GET    /api/v1/stats                — суммарная статистика
 - GET    /api/v1/documents            — список документов (+ объёмы), опц. ?source_id=
 - GET    /api/v1/documents/{doc_id}/detail — документ с секциями(parents) и чанками
+- GET    /api/v1/chunks/export        — выгрузка чанков JSON (+ контекст), опц. ?source_id=
 - POST   /api/v1/chunk-preview        — dry-run нарезки текста (не трогает индекс)
 - GET    /api/v1/settings             — текущие настройки (live + restart)
 - POST   /api/v1/settings             — обновить настройки (items: dict)
@@ -23,13 +24,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 import time
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
@@ -361,6 +363,19 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
                 for p in d.parents
             ],
         }
+
+    @app.get("/api/v1/chunks/export", dependencies=[Depends(auth)])
+    def export_chunks(source_id: str = "") -> Response:
+        data = index.export_chunks(source_id or None)
+        safe_source = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in source_id)
+        suffix = f"-{safe_source}" if safe_source else ""
+        return Response(
+            content=json.dumps(data, ensure_ascii=False, indent=2),
+            media_type="application/json; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="elion-dal-chunks{suffix}.json"'
+            },
+        )
 
     @app.post("/api/v1/chunk-preview", dependencies=[Depends(auth)])
     def chunk_preview(req: ChunkPreviewIn) -> dict:

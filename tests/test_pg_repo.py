@@ -134,6 +134,28 @@ def test_list_documents_and_detail(tmp_path):
     assert repo.get_document_detail("nope") is None
 
 
+def test_export_chunks_includes_full_context(tmp_path):
+    repo = make_repo(tmp_path)
+    repo.ensure_source("s1")
+    repo.upsert_document(make_doc(), raw_text="секция")
+    repo.replace_parents_and_chunks("d1", [make_parent()])
+    repo.set_content_hash("d1", "abc")
+
+    export = repo.export_chunks("s1")
+    assert export["schema"] == "elion-dal.chunks-export.v1"
+    assert export["source_id"] == "s1"
+    assert export["counts"]["chunks"] == 2
+    first = export["chunks"][0]
+    assert first["source"]["source_id"] == "s1"
+    assert first["document"]["doc_id"] == "d1"
+    assert first["document"]["indexed"] is True
+    assert first["parent"]["parent_id"] == "d1::0"
+    assert first["parent"]["heading_path"] == ["A", "A.1"]
+    assert first["chunk"]["chunk_id"] == "d1::0#0"
+    assert first["chunk"]["point_id"]
+    assert first["chunk"]["text"] == "ребёнок1"
+
+
 def test_list_documents_pending_flag(tmp_path):
     # Документ записан, но content_hash ещё не зафиксирован -> indexed=False (pending).
     repo = make_repo(tmp_path)

@@ -481,6 +481,9 @@ class IndexService:
         """Документ с его секциями(parents) и чанками — для просмотра в админке."""
         return self.pg.get_document_detail(doc_id)
 
+    def export_chunks(self, source_id: str | None = None) -> dict:
+        return self.pg.export_chunks(source_id)
+
     def preview_chunking(
         self,
         text: str,

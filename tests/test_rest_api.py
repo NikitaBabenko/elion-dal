@@ -85,6 +85,22 @@ class FakeIndex:
             ],
         )
 
+    def export_chunks(self, source_id=None):
+        return {
+            "schema": "elion-dal.chunks-export.v1",
+            "generated_at": "2026-07-08T00:00:00+00:00",
+            "source_id": source_id or "",
+            "counts": {"sources": 1, "documents": 1, "parents": 1, "chunks": 1},
+            "chunks": [
+                {
+                    "source": {"source_id": "s1"},
+                    "document": {"doc_id": "d1"},
+                    "parent": {"parent_id": "d1::0"},
+                    "chunk": {"chunk_id": "d1::0#0", "text": "child0"},
+                }
+            ],
+        }
+
     def preview_chunking(self, text, chunk_tokens=None, chunk_overlap=None,
                          min_tokens=None, separator_mode=None):
         words = text.split()
@@ -236,6 +252,18 @@ def test_document_detail_endpoint():
     assert body["parents"][0]["chunks"][1]["chunk_index"] == 1
     # отсутствующий документ -> 404
     assert c.get("/api/v1/documents/nope/detail").status_code == 404
+
+
+def test_chunks_export_endpoint_downloads_json():
+    c = app_open()
+    r = c.get("/api/v1/chunks/export?source_id=s1")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/json")
+    assert "attachment" in r.headers["content-disposition"]
+    body = r.json()
+    assert body["schema"] == "elion-dal.chunks-export.v1"
+    assert body["source_id"] == "s1"
+    assert body["chunks"][0]["chunk"]["chunk_id"] == "d1::0#0"
 
 
 def test_chunk_preview_endpoint():

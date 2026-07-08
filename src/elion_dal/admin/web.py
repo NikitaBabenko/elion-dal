@@ -15,6 +15,7 @@ from __future__ import annotations
 # ruff: noqa: E501, B008
 import hashlib
 import html
+import json
 import secrets
 import tempfile
 from dataclasses import asdict
@@ -22,7 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from ..ingestion.loaders import load_document
@@ -72,6 +73,15 @@ async function doSearch(e){
 }
 
 function esc(s){const d=document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
+
+function chunksExportUrl(){
+  const src=document.getElementById('doc_source')?.value || '';
+  return 'api/chunks/export'+(src?`?source_id=${encodeURIComponent(src)}`:'');
+}
+
+function downloadChunks(){
+  window.location.href=chunksExportUrl();
+}
 
 // наибольший общий «суффикс a ∩ префикс b» — визуализация перекрытия соседних чанков
 function overlapLen(a,b){
@@ -284,6 +294,7 @@ def create_app(client, settings=None) -> FastAPI:
         <form onsubmit='loadDocs(event)'>
           источник <select id=doc_source>{src_options}</select>
           <button>Загрузить список</button>
+          <button type=button onclick='downloadChunks()'>Выгрузить в файл</button>
         </form>
         <div id=doc_list></div>
         <div id=doc_detail></div>
@@ -345,6 +356,17 @@ def create_app(client, settings=None) -> FastAPI:
     @app.get("/api/documents/{doc_id}/detail")
     def api_document_detail(doc_id: str):
         return client.get_document_detail(doc_id)
+
+    @app.get("/api/chunks/export")
+    def api_chunks_export(source_id: str = "") -> Response:
+        data = client.export_chunks(source_id or None)
+        safe_source = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in source_id)
+        suffix = f"-{safe_source}" if safe_source else ""
+        return Response(
+            content=json.dumps(data, ensure_ascii=False, indent=2),
+            media_type="application/json; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="elion-dal-chunks{suffix}.json"'},
+        )
 
     @app.post("/api/chunk-preview")
     def api_chunk_preview(

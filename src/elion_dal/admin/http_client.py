@@ -137,6 +137,12 @@ class HttpAdminClient:
         r.raise_for_status()
         return r.json()
 
+    def export_chunks(self, source_id: str = "") -> dict:
+        params = {"source_id": source_id} if source_id else {}
+        r = self._client.get("/api/v1/chunks/export", params=params, timeout=120.0)
+        r.raise_for_status()
+        return r.json()
+
     def preview_chunking(
         self,
         text: str,

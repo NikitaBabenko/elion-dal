@@ -77,6 +77,22 @@ class FakeIndex:
             ],
         }
 
+    def export_chunks(self, source_id=""):
+        return {
+            "schema": "elion-dal.chunks-export.v1",
+            "generated_at": "2026-07-08T00:00:00+00:00",
+            "source_id": source_id or "",
+            "counts": {"sources": 1, "documents": 1, "parents": 1, "chunks": 1},
+            "chunks": [
+                {
+                    "source": {"source_id": "s1", "name": "s1", "last_indexed_ts": 0},
+                    "document": {"doc_id": "d1", "title": "Док"},
+                    "parent": {"parent_id": "d1::0", "heading_path": ["A"]},
+                    "chunk": {"chunk_id": "d1::0#0", "text": "c0"},
+                }
+            ],
+        }
+
     def preview_chunking(self, text, chunk_tokens=None, chunk_overlap=None,
                          min_tokens=None, separator_mode=None):
         return {
@@ -133,6 +149,8 @@ def test_dashboard_has_chunk_sections():
     assert "doPreview" in t
     assert "loadDocs" in t
     assert "showChunks" in t
+    assert "downloadChunks" in t
+    assert "api/chunks/export" in t
 
 
 def test_api_documents_proxy():
@@ -148,6 +166,16 @@ def test_api_document_detail_proxy():
     assert r.status_code == 200
     body = r.json()
     assert body["parents"][0]["chunks"][0]["chunk_id"] == "d1::0#0"
+
+
+def test_api_chunks_export_download():
+    r = client().get("/api/chunks/export?source_id=s1")
+    assert r.status_code == 200
+    assert "attachment" in r.headers["content-disposition"]
+    body = r.json()
+    assert body["schema"] == "elion-dal.chunks-export.v1"
+    assert body["source_id"] == "s1"
+    assert body["chunks"][0]["chunk"]["chunk_id"] == "d1::0#0"
 
 
 def test_api_chunk_preview_proxy():
