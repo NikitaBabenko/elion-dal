@@ -358,6 +358,14 @@ class PgRepo:
             s.execute(delete(Document).where(Document.doc_id == doc_id))
             return (1 if exists else 0), int(chunks_n)
 
+    def delete_all(self) -> tuple[int, int, int]:
+        with self._sm.begin() as s:
+            sources_n = s.execute(select(func.count()).select_from(Source)).scalar_one()
+            docs_n = s.execute(select(func.count()).select_from(Document)).scalar_one()
+            chunks_n = s.execute(select(func.count()).select_from(Chunk)).scalar_one()
+            s.execute(delete(Source))
+            return int(sources_n), int(docs_n), int(chunks_n)
+
     def list_sources(self) -> list[SourceStats]:
         with self._sm() as s:
             sources = list(s.execute(select(Source)).scalars())

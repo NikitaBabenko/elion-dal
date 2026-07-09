@@ -98,6 +98,23 @@ def test_delete_by_doc(tmp_path):
     assert repo.delete_by_doc("nope") == (0, 0)
 
 
+def test_delete_all_cascades_sources_docs_and_chunks(tmp_path):
+    repo = make_repo(tmp_path)
+    repo.ensure_source("s1")
+    repo.upsert_document(make_doc(), raw_text="секция")
+    repo.replace_parents_and_chunks("d1", [make_parent()])
+    repo.ensure_source("s2")
+    repo.upsert_document(make_doc(doc_id="d2"), raw_text="секция")
+    repo.replace_parents_and_chunks("d2", [make_parent("d2::0")])
+
+    assert repo.delete_all() == (2, 2, 4)
+    stats = repo.get_stats()
+    assert stats.total_documents == 0
+    assert stats.total_parents == 0
+    assert stats.total_chunks == 0
+    assert stats.sources == []
+
+
 def test_list_documents_and_detail(tmp_path):
     repo = make_repo(tmp_path)
     repo.ensure_source("s1")

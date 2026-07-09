@@ -209,6 +209,9 @@ class QdrantRepo:
             "delete_by_source",
         )
 
+    def delete_all(self) -> None:
+        self._retry(self.recreate_collection, "delete_all")
+
     def _filter(
         self,
         source_ids: Sequence[str],

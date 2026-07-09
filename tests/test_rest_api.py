@@ -22,6 +22,7 @@ class FakeIndex:
     def __init__(self):
         self.deleted_sources = []
         self.deleted_docs = []
+        self.deleted_all = False
         self.processed = []
         self.updated_settings = None
         self.settings_store = None  # без override токена
@@ -57,6 +58,10 @@ class FakeIndex:
     def delete_doc(self, doc_id):
         self.deleted_docs.append(doc_id)
         return 1, 3
+
+    def delete_all(self):
+        self.deleted_all = True
+        return 1, 2, 3
 
     def process_document(self, doc, counts):
         self.processed.append(doc)
@@ -208,6 +213,15 @@ def test_delete_source_and_doc():
     assert r1.json() == {"documents_deleted": 1, "chunks_deleted": 3}
     r2 = c.delete("/api/v1/documents/d1")
     assert r2.json()["documents_deleted"] == 1
+
+
+def test_delete_all_sources_endpoint():
+    idx = FakeIndex()
+    c = TestClient(create_api(idx, Settings()))
+    r = c.delete("/api/v1/sources")
+    assert r.status_code == 200
+    assert r.json() == {"sources_deleted": 1, "documents_deleted": 2, "chunks_deleted": 3}
+    assert idx.deleted_all is True
 
 
 def test_upsert_document_with_sections():

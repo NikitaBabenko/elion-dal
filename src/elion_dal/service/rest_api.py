@@ -11,6 +11,7 @@
 # - POST   /api/v1/sources/{source_id}/reindex
 #   — пересобрать индекс Qdrant из PG (body: {"recreate": bool})
 - DELETE /api/v1/sources/{source_id}  — удалить источник
+- DELETE /api/v1/sources              — удалить все источники
 - DELETE /api/v1/documents/{doc_id}   — удалить документ
 - GET    /api/v1/sources              — список источников + объёмы
 - GET    /api/v1/stats                — суммарная статистика
@@ -276,6 +277,15 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
     def delete_source(source_id: str) -> dict:
         docs, chunks = index.delete_source(source_id)
         return {"documents_deleted": docs, "chunks_deleted": chunks}
+
+    @app.delete("/api/v1/sources", dependencies=[Depends(auth)])
+    def delete_all_sources() -> dict:
+        sources, docs, chunks = index.delete_all()
+        return {
+            "sources_deleted": sources,
+            "documents_deleted": docs,
+            "chunks_deleted": chunks,
+        }
 
     @app.delete("/api/v1/documents/{doc_id}", dependencies=[Depends(auth)])
     def delete_doc(doc_id: str) -> dict:

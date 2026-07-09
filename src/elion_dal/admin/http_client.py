@@ -125,6 +125,12 @@ class HttpAdminClient:
         d = r.json()
         return d["documents_deleted"], d["chunks_deleted"]
 
+    def delete_all(self) -> tuple[int, int, int]:
+        r = self._client.delete("/api/v1/sources")
+        r.raise_for_status()
+        d = r.json()
+        return d["sources_deleted"], d["documents_deleted"], d["chunks_deleted"]
+
     # ---------- просмотр документов и чанков ----------
     def list_documents(self, source_id: str = "") -> list[dict]:
         params = {"source_id": source_id} if source_id else {}

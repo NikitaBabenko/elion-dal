@@ -17,6 +17,7 @@ class FakeIndex:
     def __init__(self):
         self.deleted_sources = []
         self.deleted_docs = []
+        self.deleted_all = False
         self.uploaded = []
         self.updated_settings = None
 
@@ -49,6 +50,10 @@ class FakeIndex:
     def delete_doc(self, doc_id):
         self.deleted_docs.append(doc_id)
         return 1, 3
+
+    def delete_all(self):
+        self.deleted_all = True
+        return 1, 2, 3
 
     def process_document(self, doc, counts):
         self.uploaded.append(doc)
@@ -124,6 +129,7 @@ def test_dashboard_renders():
     assert r.status_code == 200
     assert "Элион — DAL Admin" in r.text
     assert "Источник 1" in r.text  # строка таблицы источников
+    assert "Удалить все" in r.text
     assert "Настройки" in r.text  # секция редактирования настроек
     assert "после рестарта" in r.text  # пометка у restart-настройки
 
@@ -211,6 +217,14 @@ def test_delete_source_and_doc():
     assert r1.status_code == 303
     r2 = c.post("/docs/d1/delete", follow_redirects=False)
     assert r2.status_code == 303
+
+
+def test_delete_all_sources():
+    app_index = FakeIndex()
+    c = TestClient(create_app(app_index))
+    r = c.post("/sources/delete-all", follow_redirects=False)
+    assert r.status_code == 303
+    assert app_index.deleted_all is True
 
 
 def test_upload_indexes_docx():

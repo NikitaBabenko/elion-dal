@@ -258,6 +258,10 @@ def create_app(client, settings=None) -> FastAPI:
           <div class=card>чанки<b>{st.total_chunks}</b></div>
         </div>
         <h2>Источники</h2>
+        <form method=post action='sources/delete-all' style='margin:8px 0'
+          onsubmit="return confirm('Удалить ВСЕ источники, документы и чанки?')">
+          <button>Удалить все</button>
+        </form>
         <table><tr><th>source_id</th><th>имя</th><th>док.</th><th>род.</th><th>чанки</th>
           <th>синхронизация</th><th></th></tr>{rows or "<tr><td colspan=7 class=muted>пусто</td></tr>"}</table>
         <h2>Загрузить документ</h2>
@@ -398,6 +402,11 @@ def create_app(client, settings=None) -> FastAPI:
     @app.post("/sources/{source_id}/delete")
     def delete_source(source_id: str, request: Request) -> RedirectResponse:
         client.delete_source(source_id)
+        return RedirectResponse(_dashboard_url(request), status_code=303)
+
+    @app.post("/sources/delete-all")
+    def delete_all_sources(request: Request) -> RedirectResponse:
+        client.delete_all()
         return RedirectResponse(_dashboard_url(request), status_code=303)
 
     @app.post("/docs/{doc_id}/delete")

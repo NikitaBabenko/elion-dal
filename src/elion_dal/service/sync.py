@@ -467,6 +467,11 @@ class IndexService:
         self.qdrant.delete_by_doc(doc_id)
         return docs, chunks
 
+    def delete_all(self) -> tuple[int, int, int]:
+        sources, docs, chunks = self.pg.delete_all()
+        self.qdrant.delete_all()
+        return sources, docs, chunks
+
     def list_sources(self) -> list[SourceStats]:
         return self.pg.list_sources()
 
