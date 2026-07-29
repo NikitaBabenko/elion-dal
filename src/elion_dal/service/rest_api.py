@@ -273,14 +273,32 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
         return {"docs": stats.docs, "chunks": stats.chunks, "failed": stats.failed}
 
     # --- удаление ---
+    # Qdrant удаляется раньше PostgreSQL (см. IndexService.delete_*) — если
+    # Qdrant-вызов всё же не проходит после retry, документ ещё цел и в PG, и
+    # в Qdrant, поэтому такую ошибку MUST возвращать как сбой (503), а не как
+    # частичный/тихий успех — иначе caller решит, что удаление завершено.
     @app.delete("/api/v1/sources/{source_id}", dependencies=[Depends(auth)])
     def delete_source(source_id: str) -> dict:
-        docs, chunks = index.delete_source(source_id)
+        try:
+            docs, chunks = index.delete_source(source_id)
+        except Exception as e:  # noqa: BLE001 — см. комментарий выше
+            logger.exception("delete_source failed source_id=%s", source_id)
+            raise HTTPException(
+                status_code=503,
+                detail=f"delete backend temporarily unavailable ({type(e).__name__})",
+            ) from e
         return {"documents_deleted": docs, "chunks_deleted": chunks}
 
     @app.delete("/api/v1/sources", dependencies=[Depends(auth)])
     def delete_all_sources() -> dict:
-        sources, docs, chunks = index.delete_all()
+        try:
+            sources, docs, chunks = index.delete_all()
+        except Exception as e:  # noqa: BLE001
+            logger.exception("delete_all failed")
+            raise HTTPException(
+                status_code=503,
+                detail=f"delete backend temporarily unavailable ({type(e).__name__})",
+            ) from e
         return {
             "sources_deleted": sources,
             "documents_deleted": docs,
@@ -289,7 +307,14 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
 
     @app.delete("/api/v1/documents/{doc_id}", dependencies=[Depends(auth)])
     def delete_doc(doc_id: str) -> dict:
-        docs, chunks = index.delete_doc(doc_id)
+        try:
+            docs, chunks = index.delete_doc(doc_id)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("delete_doc failed doc_id=%s", doc_id)
+            raise HTTPException(
+                status_code=503,
+                detail=f"delete backend temporarily unavailable ({type(e).__name__})",
+            ) from e
         return {"documents_deleted": docs, "chunks_deleted": chunks}
 
     # --- статистика ---

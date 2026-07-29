@@ -458,19 +458,30 @@ class IndexService:
         return stats
 
     def delete_source(self, source_id: str) -> tuple[int, int]:
-        docs, chunks = self.pg.delete_by_source(source_id)
+        """Удаляет источник: сначала Qdrant, затем PostgreSQL.
+
+        PostgreSQL-транзакция коммитится немедленно (`pg.delete_by_source`
+        использует `Session.begin()`), поэтому если сначала удалить из PG,
+        а Qdrant-вызов затем не пройдёт (после исчерпания retry в
+        `QdrantRepo._retry`), удалённое содержимое остаётся доступным для
+        поиска — PG уже не знает о документе, но vectors в Qdrant живы, и
+        полноценного cross-system rollback/reconciler нет. Обратный порядок
+        устраняет это окно: если Qdrant-вызов не удаётся, PG не трогается
+        вовсе (полная запись документа сохраняется для повтора); если
+        Qdrant отработал, PG удаляется следом.
+        """
         self.qdrant.delete_by_source(source_id)
-        return docs, chunks
+        return self.pg.delete_by_source(source_id)
 
     def delete_doc(self, doc_id: str) -> tuple[int, int]:
-        docs, chunks = self.pg.delete_by_doc(doc_id)
+        """Удаляет документ: сначала Qdrant, затем PostgreSQL (см. delete_source)."""
         self.qdrant.delete_by_doc(doc_id)
-        return docs, chunks
+        return self.pg.delete_by_doc(doc_id)
 
     def delete_all(self) -> tuple[int, int, int]:
-        sources, docs, chunks = self.pg.delete_all()
+        """Удаляет весь индекс: сначала Qdrant, затем PostgreSQL (см. delete_source)."""
         self.qdrant.delete_all()
-        return sources, docs, chunks
+        return self.pg.delete_all()
 
     def list_sources(self) -> list[SourceStats]:
         return self.pg.list_sources()
