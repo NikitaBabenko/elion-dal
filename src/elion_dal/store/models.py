@@ -21,6 +21,7 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    true,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -62,6 +63,12 @@ class Document(Base):
         String(128), ForeignKey("sources.source_id", ondelete="CASCADE"), index=True
     )
     canonical_doc_id: Mapped[str] = mapped_column(String(256), index=True, nullable=True)
+    academic_year: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=true()
+    )
     url: Mapped[str] = mapped_column(Text, default="")
     title: Mapped[str] = mapped_column(Text, default="")
     lang: Mapped[str] = mapped_column(String(16), default="ru")

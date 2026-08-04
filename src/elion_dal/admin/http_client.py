@@ -74,7 +74,14 @@ class HttpAdminClient:
 
     # ---------- поиск ----------
     def search(
-        self, query: str, top_k: int, source_ids: list[str], min_published_ts: int
+        self,
+        query: str,
+        top_k: int,
+        source_ids: list[str],
+        min_published_ts: int,
+        academic_year: int | None = None,
+        is_active: bool | None = None,
+        return_chunk: bool = True,
     ) -> list[ParentHit]:
         r = self._client.post(
             "/api/v1/search",
@@ -83,6 +90,9 @@ class HttpAdminClient:
                 "top_k": top_k,
                 "source_ids": list(source_ids),
                 "min_published_ts": min_published_ts,
+                "academic_year": academic_year or 0,
+                "is_active": is_active,
+                "return_chunk": return_chunk,
             },
         )
         r.raise_for_status()
@@ -98,6 +108,8 @@ class HttpAdminClient:
                 matched_child=h["matched_child"],
                 score=h["score"],
                 dense_score=h["dense_score"],
+                academic_year=h.get("academic_year", 0),
+                is_active=h.get("is_active", True),
             )
             for h in r.json().get("hits", [])
         ]
@@ -201,6 +213,9 @@ class HttpAdminClient:
             "published_ts": doc.published_ts,
             "content_hash": doc.content_hash,
             "index_in_rag": doc.index_in_rag,
+            "canonical_doc_id": doc.canonical_doc_id,
+            "academic_year": doc.academic_year or 0,
+            "is_active": True if doc.is_active is None else doc.is_active,
             "sections": [
                 {
                     "section_id": s.section_id,

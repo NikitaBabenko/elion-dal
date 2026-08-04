@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from elion_dal.chunking.chunker import Chunk
 from elion_dal.embedding.base import Embedding, SparseVector
 from elion_dal.service.sync import IndexService, UpsertCounts
@@ -322,6 +324,64 @@ def test_upsert_batched_by_size():
     assert counts.indexed == 1
     assert counts.chunks_upserted == 5
     assert svc.qdrant.upsert_calls == 3
+
+
+@pytest.mark.parametrize(
+    ("service_method", "qdrant_method", "pg_method", "args", "expected"),
+    [
+        ("delete_doc", "delete_by_doc", "delete_by_doc", ("d1",), (1, 3)),
+        ("delete_source", "delete_by_source", "delete_by_source", ("s1",), (2, 6)),
+        ("delete_all", "delete_all", "delete_all", (), (1, 2, 6)),
+    ],
+)
+def test_delete_calls_qdrant_before_postgres(
+    service_method, qdrant_method, pg_method, args, expected
+):
+    svc = make_service()
+    calls = []
+
+    def qdrant_delete(*_args):
+        calls.append("qdrant")
+
+    def pg_delete(*_args):
+        calls.append("postgres")
+        return expected
+
+    setattr(svc.qdrant, qdrant_method, qdrant_delete)
+    setattr(svc.pg, pg_method, pg_delete)
+
+    assert getattr(svc, service_method)(*args) == expected
+    assert calls == ["qdrant", "postgres"]
+
+
+@pytest.mark.parametrize(
+    ("service_method", "qdrant_method", "pg_method", "args"),
+    [
+        ("delete_doc", "delete_by_doc", "delete_by_doc", ("d1",)),
+        ("delete_source", "delete_by_source", "delete_by_source", ("s1",)),
+        ("delete_all", "delete_all", "delete_all", ()),
+    ],
+)
+def test_delete_does_not_touch_postgres_when_qdrant_fails(
+    service_method, qdrant_method, pg_method, args
+):
+    svc = make_service()
+    calls = []
+
+    def qdrant_delete(*_args):
+        calls.append("qdrant")
+        raise RuntimeError("qdrant unavailable")
+
+    def pg_delete(*_args):
+        calls.append("postgres")
+        raise AssertionError("PostgreSQL must not be called")
+
+    setattr(svc.qdrant, qdrant_method, qdrant_delete)
+    setattr(svc.pg, pg_method, pg_delete)
+
+    with pytest.raises(RuntimeError, match="qdrant unavailable"):
+        getattr(svc, service_method)(*args)
+    assert calls == ["qdrant"]
 
 
 def test_multisection_creates_two_parents():

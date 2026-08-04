@@ -16,18 +16,38 @@ def make_repo(tmp_path):
     return repo
 
 
-def make_doc(doc_id="d1", content_hash="h1"):
+def make_doc(
+    doc_id="d1",
+    content_hash="h1",
+    canonical_doc_id="",
+    academic_year=0,
+    is_active=True,
+):
     return DocInput(
-        doc_id=doc_id, source_id="s1", url="u", title="Заголовок", lang="ru",
-        published_ts=0, content_hash=content_hash, index_in_rag=True,
+        doc_id=doc_id,
+        source_id="s1",
+        url="u",
+        title="Заголовок",
+        lang="ru",
+        published_ts=0,
+        content_hash=content_hash,
+        index_in_rag=True,
+        canonical_doc_id=canonical_doc_id,
+        academic_year=academic_year,
+        is_active=is_active,
         sections=[SectionInput(section_id="0", heading_path=["A"], url="u", text="секция")],
     )
 
 
 def make_parent(parent_id="d1::0"):
     return ParentBuild(
-        parent_id=parent_id, section_id="0", heading_path=["A", "A.1"], url="u",
-        text="текст родителя", token_count=2, ordinal=0,
+        parent_id=parent_id,
+        section_id="0",
+        heading_path=["A", "A.1"],
+        url="u",
+        text="текст родителя",
+        token_count=2,
+        ordinal=0,
         children=[Chunk(0, "ребёнок1", 1), Chunk(1, "ребёнок2", 1)],
     )
 
@@ -53,9 +73,30 @@ def test_parents_and_children_with_join(tmp_path):
     assert "d1::0" in recs
     rec = recs["d1::0"]
     assert rec.text == "текст родителя"
-    assert rec.source_id == "s1"          # join с documents
+    assert rec.source_id == "s1"  # join с documents
     assert rec.title == "Заголовок"
     assert rec.heading_path == ["A", "A.1"]
+
+
+def test_document_metadata_persists_for_search_and_reindex(tmp_path):
+    repo = make_repo(tmp_path)
+    repo.ensure_source("s1")
+    repo.upsert_document(
+        make_doc(canonical_doc_id="canonical-d1", academic_year=2026, is_active=False),
+        raw_text="секция",
+    )
+    repo.replace_parents_and_chunks("d1", [make_parent()])
+    repo.set_content_hash("d1", "h1")
+
+    assert repo.get_doc_id_by_canonical("canonical-d1") == "d1"
+    parent = repo.get_parents(["d1::0"])["d1::0"]
+    assert parent.academic_year == 2026
+    assert parent.is_active is False
+
+    rows = list(repo.iter_documents_for_reindex())
+    assert len(rows) == 1
+    assert rows[0].academic_year == 2026
+    assert rows[0].is_active is False
 
 
 def test_replace_parents_is_idempotent(tmp_path):

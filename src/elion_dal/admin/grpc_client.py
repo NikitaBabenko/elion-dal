@@ -79,14 +79,25 @@ class GrpcAdminClient:
 
     # --- поиск ---
     def search(
-        self, query: str, top_k: int, source_ids: list[str], min_published_ts: int
+        self,
+        query: str,
+        top_k: int,
+        source_ids: list[str],
+        min_published_ts: int,
+        academic_year: int | None = None,
+        is_active: bool | None = None,
+        return_chunk: bool = True,
     ) -> list[ParentHit]:
         req = pb.SearchRequest(
             query=query,
             top_k=top_k,
             source_ids=list(source_ids),
             min_published_ts=min_published_ts,
+            academic_year=academic_year or 0,
+            return_chunk=return_chunk,
         )
+        if is_active is not None:
+            req.is_active = is_active
         resp = self._stub.Search(req, metadata=self._meta)
         return [
             ParentHit(
@@ -100,6 +111,8 @@ class GrpcAdminClient:
                 matched_child=h.matched_child,
                 score=h.score,
                 dense_score=h.dense_score,
+                academic_year=h.academic_year,
+                is_active=h.is_active,
             )
             for h in resp.hits
         ]

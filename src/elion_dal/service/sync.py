@@ -63,6 +63,8 @@ class ParentHit:
     matched_child: str = ""
     score: float = 0.0
     dense_score: float = 0.0  # raw cosine лучшего ребёнка — сигнал уверенности
+    academic_year: int = 0
+    is_active: bool = True
 
 
 class IndexService:
@@ -258,7 +260,11 @@ class IndexService:
             )
             logger.exception(
                 "Индексация прервана doc_id=%s на стадии %s (записано %d/%d, откат=%s)",
-                doc.doc_id, stage, written, total, rolled_back,
+                doc.doc_id,
+                stage,
+                written,
+                total,
+                rolled_back,
             )
             # content_hash НЕ фиксируем — документ останется pending.
             return
@@ -367,10 +373,12 @@ class IndexService:
                     title=rec.title,
                     url=rec.url,
                     heading_path=rec.heading_path,
-                    text=rec.text,                          # ← родительский текст (сохраняем)
-                    matched_child=child_text,               # ← текст чанка
+                    text=rec.text,  # ← родительский текст (сохраняем)
+                    matched_child=child_text,  # ← текст чанка
                     score=rrf,
                     dense_score=dense_map.get(child_chunk_id, 0.0),
+                    academic_year=rec.academic_year,
+                    is_active=rec.is_active,
                 )
             )
 
@@ -448,9 +456,7 @@ class IndexService:
                                 ),
                             )
                         )
-                    stats.chunks += (
-                        len(points) if dry_run else self.qdrant.upsert_chunks(points)
-                    )
+                    stats.chunks += len(points) if dry_run else self.qdrant.upsert_chunks(points)
             except Exception:  # noqa: BLE001 — изоляция сбоя по документу
                 stats.failed += 1
                 logger.exception("reindex прерван на doc_id=%s", row.doc_id)
@@ -540,14 +546,16 @@ class IndexService:
         # Сколько кусков отсеял фильтр: считаем без min_tokens и сравниваем.
         kept = preview_chunker.split(text)
         total_before = (
-            len(Chunker(
-                chunk_tokens=tokens,
-                chunk_overlap=overlap,
-                model_name=model_name,
-                min_tokens=0,
-                separator_mode=mode,
-                length_fn=length_fn,
-            ).split(text))
+            len(
+                Chunker(
+                    chunk_tokens=tokens,
+                    chunk_overlap=overlap,
+                    model_name=model_name,
+                    min_tokens=0,
+                    separator_mode=mode,
+                    length_fn=length_fn,
+                ).split(text)
+            )
             if min_tok
             else len(kept)
         )

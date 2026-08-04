@@ -50,6 +50,7 @@ class DocInput:
     is_active: bool | None = None
     canonical_doc_id: str = ""
 
+
 @dataclass(slots=True)
 class ParentBuild:
     """Готовый к записи родитель с его дочерними чанками."""
@@ -76,6 +77,8 @@ class ParentRecord:
     heading_path: list[str]
     text: str
     published_ts: int = 0
+    academic_year: int = 0
+    is_active: bool = True
 
 
 @dataclass(slots=True)
@@ -122,6 +125,8 @@ class DocReindexRow:
     title: str
     lang: str
     published_ts: int
+    academic_year: int
+    is_active: bool
     parents: dict[str, ParentReindex]  # parent_id -> (url, heading_path)
     chunks: list[ChunkRow]  # все дети документа в порядке (parent, index)
 
@@ -252,6 +257,8 @@ class PgRepo:
                         raw_text=raw_text,
                         index_in_rag=doc.index_in_rag,
                         canonical_doc_id=doc.canonical_doc_id,
+                        academic_year=doc.academic_year or 0,
+                        is_active=True if doc.is_active is None else doc.is_active,
                     )
                 )
             else:
@@ -263,6 +270,8 @@ class PgRepo:
                 existing.raw_text = raw_text
                 existing.index_in_rag = doc.index_in_rag
                 existing.canonical_doc_id = doc.canonical_doc_id
+                existing.academic_year = doc.academic_year or 0
+                existing.is_active = True if doc.is_active is None else doc.is_active
                 # content_hash намеренно не обновляем здесь.
 
     def set_content_hash(self, doc_id: str, content_hash: str) -> None:
@@ -307,12 +316,19 @@ class PgRepo:
             return {}
         with self._sm() as s:
             rows = s.execute(
-                select(Parent, Document.source_id, Document.title, Document.published_ts)
+                select(
+                    Parent,
+                    Document.source_id,
+                    Document.title,
+                    Document.published_ts,
+                    Document.academic_year,
+                    Document.is_active,
+                )
                 .join(Document, Document.doc_id == Parent.doc_id)
                 .where(Parent.parent_id.in_(list(parent_ids)))
             ).all()
         result: dict[str, ParentRecord] = {}
-        for parent, source_id, title, published_ts in rows:
+        for parent, source_id, title, published_ts, academic_year, is_active in rows:
             result[parent.parent_id] = ParentRecord(
                 parent_id=parent.parent_id,
                 doc_id=parent.doc_id,
@@ -322,6 +338,8 @@ class PgRepo:
                 heading_path=list(parent.heading_path or []),
                 text=parent.text,
                 published_ts=int(published_ts or 0),
+                academic_year=int(academic_year or 0),
+                is_active=True if is_active is None else bool(is_active),
             )
         return result
 
@@ -424,14 +442,10 @@ class PgRepo:
                 q = q.where(Document.source_id == source_id)
             docs = list(s.execute(q.order_by(Document.source_id, Document.title)).scalars())
             parent_counts = dict(
-                s.execute(
-                    select(Parent.doc_id, func.count()).group_by(Parent.doc_id)
-                ).all()
+                s.execute(select(Parent.doc_id, func.count()).group_by(Parent.doc_id)).all()
             )
             chunk_counts = dict(
-                s.execute(
-                    select(Chunk.doc_id, func.count()).group_by(Chunk.doc_id)
-                ).all()
+                s.execute(select(Chunk.doc_id, func.count()).group_by(Chunk.doc_id)).all()
             )
         return [
             DocSummary(
@@ -614,14 +628,12 @@ class PgRepo:
                         select(Document).where(Document.doc_id.in_(window))
                     ).scalars()
                 }
-                parents = list(
-                    s.execute(select(Parent).where(Parent.doc_id.in_(window))).scalars()
-                )
+                parents = list(s.execute(select(Parent).where(Parent.doc_id.in_(window))).scalars())
                 chunks = list(
                     s.execute(
-                        select(Chunk).where(Chunk.doc_id.in_(window)).order_by(
-                            Chunk.parent_id, Chunk.chunk_index
-                        )
+                        select(Chunk)
+                        .where(Chunk.doc_id.in_(window))
+                        .order_by(Chunk.parent_id, Chunk.chunk_index)
                     ).scalars()
                 )
             parents_by_doc: dict[str, dict[str, ParentReindex]] = {}
@@ -644,6 +656,8 @@ class PgRepo:
                     title=d.title,
                     lang=d.lang,
                     published_ts=int(d.published_ts or 0),
+                    academic_year=int(d.academic_year or 0),
+                    is_active=True if d.is_active is None else bool(d.is_active),
                     parents=parents_by_doc.get(doc_id, {}),
                     chunks=chunks_by_doc.get(doc_id, []),
                 )
