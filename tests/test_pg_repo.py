@@ -63,6 +63,44 @@ def test_upsert_and_get_content_hash(tmp_path):
     assert repo.get_content_hash("d1") == "abc"
 
 
+def test_resolve_document_uses_canonical_or_strict_doc_id(tmp_path):
+    repo = make_repo(tmp_path)
+    repo.ensure_source("s1")
+    stored = make_doc(canonical_doc_id="canonical-d1")
+    repo.commit_document_version(stored, raw_text="секция", parents=[make_parent()])
+
+    by_doc_id = repo.resolve_document("d1")
+    assert by_doc_id is not None
+    assert by_doc_id.doc_id == "d1"
+    assert by_doc_id.content_hash == "h1"
+    assert by_doc_id.index_in_rag is True
+
+    by_canonical = repo.resolve_document("another-id", "canonical-d1")
+    assert by_canonical == by_doc_id
+    assert repo.resolve_document("missing") is None
+
+
+def test_commit_document_version_replaces_canonical_doc_atomically(tmp_path):
+    repo = make_repo(tmp_path)
+    repo.ensure_source("s1")
+    old = make_doc(doc_id="d1", content_hash="v1", canonical_doc_id="canonical")
+    repo.commit_document_version(old, raw_text="old", parents=[make_parent("d1::0")])
+
+    new = make_doc(doc_id="d2", content_hash="v2", canonical_doc_id="canonical")
+    repo.commit_document_version(
+        new,
+        raw_text="new",
+        parents=[make_parent("d2::0")],
+        previous_doc_id="d1",
+    )
+
+    assert repo.get_content_hash("d1") is None
+    assert repo.get_parents(["d1::0"]) == {}
+    assert repo.get_content_hash("d2") == "v2"
+    assert repo.get_parents(["d2::0"])["d2::0"].doc_id == "d2"
+    assert repo.get_doc_id_by_canonical("canonical") == "d2"
+
+
 def test_parents_and_children_with_join(tmp_path):
     repo = make_repo(tmp_path)
     repo.ensure_source("s1")

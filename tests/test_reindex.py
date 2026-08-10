@@ -123,6 +123,19 @@ def test_reindex_restores_after_qdrant_loss(tmp_path):
     assert restored[0].payload["heading_path"] == ["A"]
 
 
+def test_real_pg_same_doc_id_and_hash_is_skipped(tmp_path):
+    repo = make_repo(tmp_path)
+    svc = make_service(repo, FakeQdrant())
+    svc.process_document(make_doc(h="same"), UpsertCounts())
+
+    counts = UpsertCounts()
+    svc.process_document(make_doc(h="same"), counts)
+
+    assert counts.skipped == 1
+    assert counts.indexed == 0
+    assert len(svc.qdrant.points["d1"]) == 3
+
+
 def test_reindex_preserves_academic_year_and_active_state(tmp_path):
     repo = make_repo(tmp_path)
     svc = make_service(repo, FakeQdrant())

@@ -140,6 +140,10 @@ grpcurl -plaintext -d '{"query":"налоговый вычет","top_k":3}' \
 | `POST /api/v1/chunk-preview` | dry-run нарезки текста (не трогает индекс) |
 | `GET /api/v1/settings` / `POST /api/v1/settings` | управляемые настройки |
 
+`POST /api/v1/documents` идемпотентен по паре «идентификатор + `content_hash`»:
+идентификатором служит `canonical_doc_id`, если он передан, иначе `doc_id`. Совпавший
+хеш возвращает `skipped`, изменившийся — запускает серверную переиндексацию документа.
+
 OpenAPI/Swagger: `/docs` (FastAPI отдаёт автоматом).
 
 ## Веб-админка

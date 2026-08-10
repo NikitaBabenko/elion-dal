@@ -51,6 +51,15 @@ class DocInput:
     canonical_doc_id: str = ""
 
 
+@dataclass(slots=True, frozen=True)
+class ExistingDocument:
+    """Сохранённая версия логического документа для идемпотентного ingest."""
+
+    doc_id: str
+    content_hash: str
+    index_in_rag: bool
+
+
 @dataclass(slots=True)
 class ParentBuild:
     """Готовый к записи родитель с его дочерними чанками."""
@@ -223,6 +232,29 @@ class PgRepo:
                 select(Document.content_hash).where(Document.doc_id == doc_id)
             ).scalar_one_or_none()
 
+    def resolve_document(self, doc_id: str, canonical_doc_id: str = "") -> ExistingDocument | None:
+        """Найти логический документ: по canonical_doc_id либо строго по doc_id."""
+        with self._sm() as s:
+            if canonical_doc_id:
+                row = s.execute(
+                    select(Document.doc_id, Document.content_hash, Document.index_in_rag).where(
+                        Document.canonical_doc_id == canonical_doc_id
+                    )
+                ).one_or_none()
+            else:
+                row = s.execute(
+                    select(Document.doc_id, Document.content_hash, Document.index_in_rag).where(
+                        Document.doc_id == doc_id
+                    )
+                ).one_or_none()
+        if row is None:
+            return None
+        return ExistingDocument(
+            doc_id=row.doc_id,
+            content_hash=row.content_hash,
+            index_in_rag=bool(row.index_in_rag),
+        )
+
     def get_content_hash_by_canonical(self, canonical_doc_id: str) -> str | None:
         """Получить content_hash по canonical_doc_id."""
         with self._sm() as s:
@@ -285,31 +317,75 @@ class PgRepo:
         with self._sm.begin() as s:
             # Удаляем старых родителей документа — каскад снесёт и детей.
             s.execute(delete(Parent).where(Parent.doc_id == doc_id))
-            for p in parents:
-                s.add(
-                    Parent(
+            self._add_parents_and_chunks(s, doc_id, parents)
+
+    def commit_document_version(
+        self,
+        doc: DocInput,
+        raw_text: str,
+        parents: Sequence[ParentBuild],
+        previous_doc_id: str | None = None,
+        touch_source_indexed: bool = True,
+    ) -> None:
+        """Атомарно зафиксировать мету, parents/chunks и успешный content_hash."""
+        with self._sm.begin() as s:
+            if previous_doc_id and previous_doc_id != doc.doc_id:
+                s.execute(delete(Document).where(Document.doc_id == previous_doc_id))
+
+            existing = s.get(Document, doc.doc_id)
+            if existing is None:
+                existing = Document(doc_id=doc.doc_id, source_id=doc.source_id)
+                s.add(existing)
+
+            existing.source_id = doc.source_id
+            existing.url = doc.url
+            existing.title = doc.title
+            existing.lang = doc.lang
+            existing.published_ts = doc.published_ts
+            existing.content_hash = doc.content_hash
+            existing.raw_text = raw_text
+            existing.index_in_rag = doc.index_in_rag
+            existing.canonical_doc_id = doc.canonical_doc_id
+            existing.academic_year = doc.academic_year or 0
+            existing.is_active = True if doc.is_active is None else doc.is_active
+
+            s.execute(delete(Parent).where(Parent.doc_id == doc.doc_id))
+            self._add_parents_and_chunks(s, doc.doc_id, parents)
+
+            if touch_source_indexed:
+                source = s.get(Source, doc.source_id)
+                if source is not None:
+                    source.last_indexed_at = func.now()
+
+    @staticmethod
+    def _add_parents_and_chunks(
+        session: Session, doc_id: str, parents: Sequence[ParentBuild]
+    ) -> None:
+        for p in parents:
+            session.add(
+                Parent(
+                    parent_id=p.parent_id,
+                    doc_id=doc_id,
+                    section_id=p.section_id,
+                    heading_path=p.heading_path,
+                    url=p.url,
+                    text=p.text,
+                    token_count=p.token_count,
+                    ordinal=p.ordinal,
+                )
+            )
+            for c in p.children:
+                session.add(
+                    Chunk(
+                        chunk_id=chunk_id(p.parent_id, c.index),
                         parent_id=p.parent_id,
                         doc_id=doc_id,
-                        section_id=p.section_id,
-                        heading_path=p.heading_path,
-                        url=p.url,
-                        text=p.text,
-                        token_count=p.token_count,
-                        ordinal=p.ordinal,
+                        chunk_index=c.index,
+                        text=c.text,
+                        token_count=c.token_count,
+                        content_hash=sha256(c.text),
                     )
                 )
-                for c in p.children:
-                    s.add(
-                        Chunk(
-                            chunk_id=chunk_id(p.parent_id, c.index),
-                            parent_id=p.parent_id,
-                            doc_id=doc_id,
-                            chunk_index=c.index,
-                            text=c.text,
-                            token_count=c.token_count,
-                            content_hash=sha256(c.text),
-                        )
-                    )
 
     def get_parents(self, parent_ids: Sequence[str]) -> dict[str, ParentRecord]:
         if not parent_ids:
