@@ -42,7 +42,20 @@ class FakeIndex:
     def list_sources(self):
         return self.get_stats().sources
 
-    def search(self, query, top_k, source_ids, min_published_ts, return_chunk: bool = True):
+    def search(
+        self,
+        query,
+        top_k,
+        source_ids,
+        min_published_ts,
+        academic_year=None,
+        is_active=None,
+        return_chunk: bool = True,
+    ):
+        self.last_search = {
+            "academic_year": academic_year,
+            "is_active": is_active,
+        }
         return [
             ParentHit(
                 parent_id="d1::0", doc_id="d1", source_id="s1", title="t", url="u",
@@ -225,14 +238,33 @@ def test_delete_all_sources_endpoint():
 
 
 def test_upsert_document_with_sections():
-    c = app_open()
+    idx = FakeIndex()
+    c = TestClient(create_api(idx, Settings()))
     payload = {
         "doc_id": "x1", "source_id": "kb",
+        "academic_year": 2026,
+        "is_active": True,
+        "canonical_doc_id": "x-canonical",
         "sections": [{"section_id": "0", "heading_path": [], "url": "u", "text": "hello"}],
     }
     r = c.post("/api/v1/documents", json=payload)
     assert r.status_code == 200
     assert r.json()["indexed"] == 1
+    assert idx.processed[0].academic_year == 2026
+    assert idx.processed[0].is_active is True
+    assert idx.processed[0].canonical_doc_id == "x-canonical"
+
+
+def test_search_accepts_lifecycle_filters():
+    idx = FakeIndex()
+    c = TestClient(create_api(idx, Settings()))
+    r = c.post(
+        "/api/v1/search",
+        json={"query": "правила", "academic_year": 2026, "is_active": True},
+    )
+
+    assert r.status_code == 200
+    assert idx.last_search == {"academic_year": 2026, "is_active": True}
 
 
 def test_upsert_document_fallback_text():

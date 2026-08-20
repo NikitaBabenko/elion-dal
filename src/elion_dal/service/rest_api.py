@@ -64,6 +64,9 @@ class DocumentIn(BaseModel):
     published_ts: int = 0
     content_hash: str = ""
     index_in_rag: bool = True
+    academic_year: int | None = None
+    is_active: bool | None = None
+    canonical_doc_id: str = ""
     sections: list[SectionIn] = Field(default_factory=list)
     text: str = ""  # fallback: если sections пусто, весь текст = одна секция
 
@@ -73,6 +76,8 @@ class SearchIn(BaseModel):
     top_k: int = 0
     source_ids: list[str] = Field(default_factory=list)
     min_published_ts: int = 0
+    academic_year: int = 0
+    is_active: bool | None = None
     return_chunk: bool = True  # по умолчанию — чанк
 
 
@@ -149,6 +154,8 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
                 top_k=top_k,
                 source_ids=req.source_ids,
                 min_published_ts=req.min_published_ts,
+                academic_year=req.academic_year or None,
+                is_active=req.is_active,
                 return_chunk=req.return_chunk,
             )
         except Exception as e:  # noqa: BLE001 — деградируем мягко, не голым 500
@@ -219,6 +226,9 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
             content_hash=payload.content_hash,
             index_in_rag=payload.index_in_rag,
             sections=sections,
+            academic_year=payload.academic_year,
+            is_active=payload.is_active,
+            canonical_doc_id=payload.canonical_doc_id,
         )
         counts = UpsertCounts()
         try:
