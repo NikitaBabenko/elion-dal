@@ -69,6 +69,9 @@ class Document(Base):
     content_hash: Mapped[str] = mapped_column(String(64), default="")
     raw_text: Mapped[str] = mapped_column(Text, default="")
     index_in_rag: Mapped[bool] = mapped_column(Boolean, default=True)
+    academic_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_active: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    metadata_fingerprint: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

@@ -67,6 +67,8 @@ class DocumentIn(BaseModel):
     academic_year: int | None = None
     is_active: bool | None = None
     canonical_doc_id: str = ""
+    metadata_fingerprint: str = ""
+    force_reindex: bool = False
     sections: list[SectionIn] = Field(default_factory=list)
     text: str = ""  # fallback: если sections пусто, весь текст = одна секция
 
@@ -229,6 +231,8 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
             academic_year=payload.academic_year,
             is_active=payload.is_active,
             canonical_doc_id=payload.canonical_doc_id,
+            metadata_fingerprint=payload.metadata_fingerprint,
+            force_reindex=payload.force_reindex,
         )
         counts = UpsertCounts()
         try:
@@ -370,6 +374,9 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
                     "chunk_count": d.chunk_count,
                     "canonical_doc_id": d.canonical_doc_id,
                     "content_hash": d.content_hash,
+                    "academic_year": d.academic_year,
+                    "is_active": d.is_active,
+                    "metadata_fingerprint": d.metadata_fingerprint,
                 }
                 for d in docs
             ]
@@ -391,6 +398,9 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
             "indexed": d.indexed,
             "canonical_doc_id": d.canonical_doc_id,
             "content_hash": d.content_hash,
+            "academic_year": d.academic_year,
+            "is_active": d.is_active,
+            "metadata_fingerprint": d.metadata_fingerprint,
             "parents": [
                 {
                     "parent_id": p.parent_id,

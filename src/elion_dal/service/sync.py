@@ -173,8 +173,9 @@ class IndexService:
         prev_hash = self.pg.get_content_hash_by_canonical(canonical_id)
         if prev_hash:
             if prev_hash == doc.content_hash:
-                counts.skipped += 1
-                return
+                if not doc.force_reindex:
+                    counts.skipped += 1
+                    return
             else:
                 # содержимое изменилось — удаляем старые чанки
                 old_doc_id = self.pg.get_doc_id_by_canonical(canonical_id)

@@ -10,7 +10,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from sqlalchemy import create_engine, delete, func, select, text
+from sqlalchemy import create_engine, delete, func, inspect, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..chunking.chunker import Chunk as TextChunk
@@ -49,6 +49,8 @@ class DocInput:
     academic_year: int | None = None
     is_active: bool | None = None
     canonical_doc_id: str = ""
+    metadata_fingerprint: str = ""
+    force_reindex: bool = False
 
 @dataclass(slots=True)
 class ParentBuild:
@@ -141,6 +143,9 @@ class DocSummary:
     chunk_count: int
     canonical_doc_id: str = ""
     content_hash: str = ""
+    academic_year: int | None = None
+    is_active: bool | None = None
+    metadata_fingerprint: str = ""
 
 
 @dataclass(slots=True)
@@ -181,6 +186,9 @@ class DocDetail:
     parents: list[ParentDetail]
     canonical_doc_id: str = ""
     content_hash: str = ""
+    academic_year: int | None = None
+    is_active: bool | None = None
+    metadata_fingerprint: str = ""
 
 
 class PgRepo:
@@ -202,6 +210,18 @@ class PgRepo:
     def create_all(self) -> None:
         """Создать схему напрямую (для тестов; в проде — alembic)."""
         Base.metadata.create_all(self.engine)
+        # Создание схемы не добавляет новые поля в уже развёрнутую таблицу.
+        # Backfill требует только аддитивного, безопасного расширения SoT.
+        with self.engine.begin() as conn:
+            existing = {item["name"] for item in inspect(conn).get_columns("documents")}
+            additions = {
+                "academic_year": "INTEGER",
+                "is_active": "BOOLEAN",
+                "metadata_fingerprint": "VARCHAR(64) NOT NULL DEFAULT ''",
+            }
+            for name, sql_type in additions.items():
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE documents ADD COLUMN {name} {sql_type}"))
 
     def ping(self) -> bool:
         try:
@@ -256,6 +276,9 @@ class PgRepo:
                         raw_text=raw_text,
                         index_in_rag=doc.index_in_rag,
                         canonical_doc_id=doc.canonical_doc_id,
+                        academic_year=doc.academic_year,
+                        is_active=doc.is_active,
+                        metadata_fingerprint=doc.metadata_fingerprint,
                     )
                 )
             else:
@@ -267,6 +290,9 @@ class PgRepo:
                 existing.raw_text = raw_text
                 existing.index_in_rag = doc.index_in_rag
                 existing.canonical_doc_id = doc.canonical_doc_id
+                existing.academic_year = doc.academic_year
+                existing.is_active = doc.is_active
+                existing.metadata_fingerprint = doc.metadata_fingerprint
                 # content_hash намеренно не обновляем здесь.
 
     def set_content_hash(self, doc_id: str, content_hash: str) -> None:
@@ -450,6 +476,9 @@ class PgRepo:
                 chunk_count=int(chunk_counts.get(d.doc_id, 0)),
                 canonical_doc_id=d.canonical_doc_id or "",
                 content_hash=d.content_hash or "",
+                academic_year=d.academic_year,
+                is_active=d.is_active,
+                metadata_fingerprint=d.metadata_fingerprint or "",
             )
             for d in docs
         ]
@@ -484,6 +513,9 @@ class PgRepo:
                 parents=[],
                 canonical_doc_id=d.canonical_doc_id or "",
                 content_hash=d.content_hash or "",
+                academic_year=d.academic_year,
+                is_active=d.is_active,
+                metadata_fingerprint=d.metadata_fingerprint or "",
             )
         chunks_by_parent: dict[str, list[ChunkDetail]] = {}
         for c in chunks:
