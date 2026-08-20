@@ -368,6 +368,8 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
                     "indexed": d.indexed,
                     "parent_count": d.parent_count,
                     "chunk_count": d.chunk_count,
+                    "canonical_doc_id": d.canonical_doc_id,
+                    "content_hash": d.content_hash,
                 }
                 for d in docs
             ]
@@ -387,6 +389,8 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
             "published_ts": d.published_ts,
             "index_in_rag": d.index_in_rag,
             "indexed": d.indexed,
+            "canonical_doc_id": d.canonical_doc_id,
+            "content_hash": d.content_hash,
             "parents": [
                 {
                     "parent_id": p.parent_id,

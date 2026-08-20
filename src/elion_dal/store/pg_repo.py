@@ -139,6 +139,8 @@ class DocSummary:
     indexed: bool  # content_hash != "" — закоммичен в индекс
     parent_count: int
     chunk_count: int
+    canonical_doc_id: str = ""
+    content_hash: str = ""
 
 
 @dataclass(slots=True)
@@ -177,6 +179,8 @@ class DocDetail:
     index_in_rag: bool
     indexed: bool
     parents: list[ParentDetail]
+    canonical_doc_id: str = ""
+    content_hash: str = ""
 
 
 class PgRepo:
@@ -444,6 +448,8 @@ class PgRepo:
                 indexed=bool(d.content_hash),
                 parent_count=int(parent_counts.get(d.doc_id, 0)),
                 chunk_count=int(chunk_counts.get(d.doc_id, 0)),
+                canonical_doc_id=d.canonical_doc_id or "",
+                content_hash=d.content_hash or "",
             )
             for d in docs
         ]
@@ -476,6 +482,8 @@ class PgRepo:
                 index_in_rag=bool(d.index_in_rag),
                 indexed=bool(d.content_hash),
                 parents=[],
+                canonical_doc_id=d.canonical_doc_id or "",
+                content_hash=d.content_hash or "",
             )
         chunks_by_parent: dict[str, list[ChunkDetail]] = {}
         for c in chunks:

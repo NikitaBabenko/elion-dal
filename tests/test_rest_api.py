@@ -286,6 +286,8 @@ def test_list_documents_endpoint():
     assert docs[0]["doc_id"] == "d1"
     assert docs[0]["chunk_count"] == 2
     assert docs[0]["indexed"] is True
+    assert docs[0]["canonical_doc_id"] == ""
+    assert docs[0]["content_hash"] == ""
 
 
 def test_document_detail_endpoint():
@@ -294,6 +296,8 @@ def test_document_detail_endpoint():
     assert r.status_code == 200
     body = r.json()
     assert body["title"] == "Док"
+    assert body["canonical_doc_id"] == ""
+    assert body["content_hash"] == ""
     assert body["parents"][0]["parent_id"] == "d1::0"
     assert body["parents"][0]["chunks"][1]["chunk_index"] == 1
     # отсутствующий документ -> 404
