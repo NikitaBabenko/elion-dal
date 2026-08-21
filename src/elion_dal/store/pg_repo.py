@@ -51,6 +51,8 @@ class DocInput:
     canonical_doc_id: str = ""
     metadata_fingerprint: str = ""
     force_reindex: bool = False
+    tombstone_reason: str = ""
+    merged_into_doc_id: str = ""
 
 @dataclass(slots=True)
 class ParentBuild:
@@ -146,6 +148,8 @@ class DocSummary:
     academic_year: int | None = None
     is_active: bool | None = None
     metadata_fingerprint: str = ""
+    tombstone_reason: str = ""
+    merged_into_doc_id: str = ""
 
 
 @dataclass(slots=True)
@@ -189,6 +193,8 @@ class DocDetail:
     academic_year: int | None = None
     is_active: bool | None = None
     metadata_fingerprint: str = ""
+    tombstone_reason: str = ""
+    merged_into_doc_id: str = ""
 
 
 class PgRepo:
@@ -218,6 +224,8 @@ class PgRepo:
                 "academic_year": "INTEGER",
                 "is_active": "BOOLEAN",
                 "metadata_fingerprint": "VARCHAR(64) NOT NULL DEFAULT ''",
+                "tombstone_reason": "VARCHAR(128) NOT NULL DEFAULT ''",
+                "merged_into_doc_id": "VARCHAR(256) NOT NULL DEFAULT ''",
             }
             for name, sql_type in additions.items():
                 if name not in existing:
@@ -279,6 +287,8 @@ class PgRepo:
                         academic_year=doc.academic_year,
                         is_active=doc.is_active,
                         metadata_fingerprint=doc.metadata_fingerprint,
+                        tombstone_reason=doc.tombstone_reason,
+                        merged_into_doc_id=doc.merged_into_doc_id,
                     )
                 )
             else:
@@ -293,6 +303,8 @@ class PgRepo:
                 existing.academic_year = doc.academic_year
                 existing.is_active = doc.is_active
                 existing.metadata_fingerprint = doc.metadata_fingerprint
+                existing.tombstone_reason = doc.tombstone_reason
+                existing.merged_into_doc_id = doc.merged_into_doc_id
                 # content_hash намеренно не обновляем здесь.
 
     def set_content_hash(self, doc_id: str, content_hash: str) -> None:
@@ -479,6 +491,8 @@ class PgRepo:
                 academic_year=d.academic_year,
                 is_active=d.is_active,
                 metadata_fingerprint=d.metadata_fingerprint or "",
+                tombstone_reason=d.tombstone_reason or "",
+                merged_into_doc_id=d.merged_into_doc_id or "",
             )
             for d in docs
         ]
@@ -516,6 +530,8 @@ class PgRepo:
                 academic_year=d.academic_year,
                 is_active=d.is_active,
                 metadata_fingerprint=d.metadata_fingerprint or "",
+                tombstone_reason=d.tombstone_reason or "",
+                merged_into_doc_id=d.merged_into_doc_id or "",
             )
         chunks_by_parent: dict[str, list[ChunkDetail]] = {}
         for c in chunks:

@@ -72,6 +72,8 @@ class Document(Base):
     academic_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_active: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     metadata_fingerprint: Mapped[str] = mapped_column(String(64), default="")
+    tombstone_reason: Mapped[str] = mapped_column(String(128), default="")
+    merged_into_doc_id: Mapped[str] = mapped_column(String(256), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

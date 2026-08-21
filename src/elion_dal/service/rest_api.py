@@ -69,6 +69,8 @@ class DocumentIn(BaseModel):
     canonical_doc_id: str = ""
     metadata_fingerprint: str = ""
     force_reindex: bool = False
+    tombstone_reason: str = ""
+    merged_into_doc_id: str = ""
     sections: list[SectionIn] = Field(default_factory=list)
     text: str = ""  # fallback: если sections пусто, весь текст = одна секция
 
@@ -233,6 +235,8 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
             canonical_doc_id=payload.canonical_doc_id,
             metadata_fingerprint=payload.metadata_fingerprint,
             force_reindex=payload.force_reindex,
+            tombstone_reason=payload.tombstone_reason,
+            merged_into_doc_id=payload.merged_into_doc_id,
         )
         counts = UpsertCounts()
         try:
@@ -377,6 +381,8 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
                     "academic_year": d.academic_year,
                     "is_active": d.is_active,
                     "metadata_fingerprint": d.metadata_fingerprint,
+                    "tombstone_reason": d.tombstone_reason,
+                    "merged_into_doc_id": d.merged_into_doc_id,
                 }
                 for d in docs
             ]
@@ -401,6 +407,8 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
             "academic_year": d.academic_year,
             "is_active": d.is_active,
             "metadata_fingerprint": d.metadata_fingerprint,
+            "tombstone_reason": d.tombstone_reason,
+            "merged_into_doc_id": d.merged_into_doc_id,
             "parents": [
                 {
                     "parent_id": p.parent_id,
