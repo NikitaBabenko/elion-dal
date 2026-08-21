@@ -121,7 +121,7 @@ class FakeIndex:
         elif self.upsert_mode == "blank":
             counts.blank += 1
         else:
-        counts.indexed += 1
+            counts.indexed += 1
 
     def live_top_k(self):
         return 3

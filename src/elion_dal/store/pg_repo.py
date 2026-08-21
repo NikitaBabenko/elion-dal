@@ -64,16 +64,6 @@ class ExistingDocument:
     index_in_rag: bool
 
 
-
-@dataclass(slots=True, frozen=True)
-class ExistingDocument:
-    """Сохранённая версия логического документа для идемпотентного ingest."""
-
-    doc_id: str
-    content_hash: str
-    index_in_rag: bool
-
-
 @dataclass(slots=True)
 class ParentBuild:
     """Готовый к записи родитель с его дочерними чанками."""
