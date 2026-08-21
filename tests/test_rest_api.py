@@ -344,7 +344,21 @@ def test_search_accepts_lifecycle_filters():
     )
 
     assert r.status_code == 200
-    assert idx.last_search == {"academic_year": 2026, "is_active": True}
+    assert idx.last_search == {
+        "academic_year": 2026,
+        "is_active": True,
+        "return_chunk": True,
+    }
+
+
+@pytest.mark.parametrize(("mode", "field"), [("skipped", "skipped"), ("blank", "blank")])
+def test_nonfailure_upsert_outcomes_stay_200(mode, field):
+    idx = FakeIndex()
+    idx.upsert_mode = mode
+    c = TestClient(create_api(idx, Settings()))
+    r = c.post("/api/v1/documents", json={"doc_id": "x1", "source_id": "kb", "text": "x"})
+    assert r.status_code == 200
+    assert r.json()[field] == 1
 
 
 def test_upsert_document_maps_metadata():
@@ -388,16 +402,6 @@ def test_upsert_document_returns_diagnostic_503(mode):
         "chunks_upserted",
         "failures",
     }
-
-
-@pytest.mark.parametrize(("mode", "field"), [("skipped", "skipped"), ("blank", "blank")])
-def test_nonfailure_upsert_outcomes_stay_200(mode, field):
-    idx = FakeIndex()
-    idx.upsert_mode = mode
-    c = TestClient(create_api(idx, Settings()))
-    r = c.post("/api/v1/documents", json={"doc_id": "x1", "source_id": "kb", "text": "x"})
-    assert r.status_code == 200
-    assert r.json()[field] == 1
 
 
 def test_index_in_rag_false_stays_200():
