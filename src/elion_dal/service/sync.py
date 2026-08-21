@@ -448,8 +448,8 @@ class IndexService:
                     title=rec.title,
                     url=rec.url,
                     heading_path=rec.heading_path,
-                    text=rec.text,                          # ← родительский текст (сохраняем)
-                    matched_child=child_text,               # ← текст чанка
+                    text=rec.text,  # ← родительский текст (сохраняем)
+                    matched_child=child_text,  # ← текст чанка
                     score=rrf,
                     dense_score=dense_map.get(child_chunk_id, 0.0),
                     academic_year=rec.academic_year,
