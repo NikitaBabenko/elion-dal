@@ -293,6 +293,19 @@ def test_unchanged_document_skipped():
     assert svc.qdrant.upsert_calls == upserts_after_first
 
 
+def test_force_reindex_bypasses_same_hash_deduplication():
+    svc = make_service()
+    counts = UpsertCounts()
+    svc.process_document(doc(h="same"), counts)
+    forced = doc(h="same")
+    forced.force_reindex = True
+
+    svc.process_document(forced, counts)
+
+    assert counts.indexed == 2
+    assert counts.skipped == 0
+
+
 def test_changed_document_reindexed():
     svc = make_service()
     counts = UpsertCounts()

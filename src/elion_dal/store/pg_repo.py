@@ -10,7 +10,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from sqlalchemy import create_engine, delete, func, select, text
+from sqlalchemy import create_engine, delete, func, inspect, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..chunking.chunker import Chunk as TextChunk
@@ -49,6 +49,10 @@ class DocInput:
     academic_year: int | None = None
     is_active: bool | None = None
     canonical_doc_id: str = ""
+    metadata_fingerprint: str = ""
+    force_reindex: bool = False
+    tombstone_reason: str = ""
+    merged_into_doc_id: str = ""
 
 
 @dataclass(slots=True, frozen=True)
@@ -153,6 +157,13 @@ class DocSummary:
     indexed: bool  # content_hash != "" — закоммичен в индекс
     parent_count: int
     chunk_count: int
+    canonical_doc_id: str = ""
+    content_hash: str = ""
+    academic_year: int | None = None
+    is_active: bool | None = None
+    metadata_fingerprint: str = ""
+    tombstone_reason: str = ""
+    merged_into_doc_id: str = ""
 
 
 @dataclass(slots=True)
@@ -191,6 +202,13 @@ class DocDetail:
     index_in_rag: bool
     indexed: bool
     parents: list[ParentDetail]
+    canonical_doc_id: str = ""
+    content_hash: str = ""
+    academic_year: int | None = None
+    is_active: bool | None = None
+    metadata_fingerprint: str = ""
+    tombstone_reason: str = ""
+    merged_into_doc_id: str = ""
 
 
 class PgRepo:
@@ -212,6 +230,20 @@ class PgRepo:
     def create_all(self) -> None:
         """Создать схему напрямую (для тестов; в проде — alembic)."""
         Base.metadata.create_all(self.engine)
+        # Создание схемы не добавляет новые поля в уже развёрнутую таблицу.
+        # Backfill требует только аддитивного, безопасного расширения SoT.
+        with self.engine.begin() as conn:
+            existing = {item["name"] for item in inspect(conn).get_columns("documents")}
+            additions = {
+                "academic_year": "INTEGER",
+                "is_active": "BOOLEAN",
+                "metadata_fingerprint": "VARCHAR(64) NOT NULL DEFAULT ''",
+                "tombstone_reason": "VARCHAR(128) NOT NULL DEFAULT ''",
+                "merged_into_doc_id": "VARCHAR(256) NOT NULL DEFAULT ''",
+            }
+            for name, sql_type in additions.items():
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE documents ADD COLUMN {name} {sql_type}"))
 
     def ping(self) -> bool:
         try:
@@ -291,6 +323,9 @@ class PgRepo:
                         canonical_doc_id=doc.canonical_doc_id,
                         academic_year=doc.academic_year or 0,
                         is_active=True if doc.is_active is None else doc.is_active,
+                        metadata_fingerprint=doc.metadata_fingerprint,
+                        tombstone_reason=doc.tombstone_reason,
+                        merged_into_doc_id=doc.merged_into_doc_id,
                     )
                 )
             else:
@@ -304,6 +339,9 @@ class PgRepo:
                 existing.canonical_doc_id = doc.canonical_doc_id
                 existing.academic_year = doc.academic_year or 0
                 existing.is_active = True if doc.is_active is None else doc.is_active
+                existing.metadata_fingerprint = doc.metadata_fingerprint
+                existing.tombstone_reason = doc.tombstone_reason
+                existing.merged_into_doc_id = doc.merged_into_doc_id
                 # content_hash намеренно не обновляем здесь.
 
     def set_content_hash(self, doc_id: str, content_hash: str) -> None:
@@ -534,6 +572,13 @@ class PgRepo:
                 indexed=bool(d.content_hash),
                 parent_count=int(parent_counts.get(d.doc_id, 0)),
                 chunk_count=int(chunk_counts.get(d.doc_id, 0)),
+                canonical_doc_id=d.canonical_doc_id or "",
+                content_hash=d.content_hash or "",
+                academic_year=d.academic_year,
+                is_active=d.is_active,
+                metadata_fingerprint=d.metadata_fingerprint or "",
+                tombstone_reason=d.tombstone_reason or "",
+                merged_into_doc_id=d.merged_into_doc_id or "",
             )
             for d in docs
         ]
@@ -566,6 +611,13 @@ class PgRepo:
                 index_in_rag=bool(d.index_in_rag),
                 indexed=bool(d.content_hash),
                 parents=[],
+                canonical_doc_id=d.canonical_doc_id or "",
+                content_hash=d.content_hash or "",
+                academic_year=d.academic_year,
+                is_active=d.is_active,
+                metadata_fingerprint=d.metadata_fingerprint or "",
+                tombstone_reason=d.tombstone_reason or "",
+                merged_into_doc_id=d.merged_into_doc_id or "",
             )
         chunks_by_parent: dict[str, list[ChunkDetail]] = {}
         for c in chunks:

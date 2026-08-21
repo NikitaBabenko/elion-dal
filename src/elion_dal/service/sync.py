@@ -205,8 +205,9 @@ class IndexService:
             and existing.content_hash == doc.content_hash
             and existing.index_in_rag
         ):
-            counts.skipped += 1
-            return
+                if not doc.force_reindex:
+                    counts.skipped += 1
+                    return
 
         self._apply_live_chunk_params()
 
@@ -622,12 +623,12 @@ class IndexService:
         total_before = (
             len(
                 Chunker(
-                    chunk_tokens=tokens,
-                    chunk_overlap=overlap,
-                    model_name=model_name,
-                    min_tokens=0,
-                    separator_mode=mode,
-                    length_fn=length_fn,
+                chunk_tokens=tokens,
+                chunk_overlap=overlap,
+                model_name=model_name,
+                min_tokens=0,
+                separator_mode=mode,
+                length_fn=length_fn,
                 ).split(text)
             )
             if min_tok

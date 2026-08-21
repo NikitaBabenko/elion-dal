@@ -317,15 +317,48 @@ def test_delete_endpoints_return_sanitized_503(method, path):
 
 
 def test_upsert_document_with_sections():
-    c = app_open()
+    idx = FakeIndex()
+    c = TestClient(create_api(idx, Settings()))
     payload = {
         "doc_id": "x1",
         "source_id": "kb",
+        "academic_year": 2026,
+        "is_active": True,
+        "canonical_doc_id": "x-canonical",
         "sections": [{"section_id": "0", "heading_path": [], "url": "u", "text": "hello"}],
     }
     r = c.post("/api/v1/documents", json=payload)
     assert r.status_code == 200
     assert r.json()["indexed"] == 1
+    assert idx.processed[0].academic_year == 2026
+    assert idx.processed[0].is_active is True
+    assert idx.processed[0].canonical_doc_id == "x-canonical"
+
+
+def test_search_accepts_lifecycle_filters():
+    idx = FakeIndex()
+    c = TestClient(create_api(idx, Settings()))
+    r = c.post(
+        "/api/v1/search",
+        json={"query": "правила", "academic_year": 2026, "is_active": True},
+    )
+
+    assert r.status_code == 200
+    assert idx.last_search == {
+        "academic_year": 2026,
+        "is_active": True,
+        "return_chunk": True,
+    }
+
+
+@pytest.mark.parametrize(("mode", "field"), [("skipped", "skipped"), ("blank", "blank")])
+def test_nonfailure_upsert_outcomes_stay_200(mode, field):
+    idx = FakeIndex()
+    idx.upsert_mode = mode
+    c = TestClient(create_api(idx, Settings()))
+    r = c.post("/api/v1/documents", json={"doc_id": "x1", "source_id": "kb", "text": "x"})
+    assert r.status_code == 200
+    assert r.json()[field] == 1
 
 
 def test_upsert_document_maps_metadata():
@@ -369,16 +402,6 @@ def test_upsert_document_returns_diagnostic_503(mode):
         "chunks_upserted",
         "failures",
     }
-
-
-@pytest.mark.parametrize(("mode", "field"), [("skipped", "skipped"), ("blank", "blank")])
-def test_nonfailure_upsert_outcomes_stay_200(mode, field):
-    idx = FakeIndex()
-    idx.upsert_mode = mode
-    c = TestClient(create_api(idx, Settings()))
-    r = c.post("/api/v1/documents", json={"doc_id": "x1", "source_id": "kb", "text": "x"})
-    assert r.status_code == 200
-    assert r.json()[field] == 1
 
 
 def test_index_in_rag_false_stays_200():
@@ -428,6 +451,8 @@ def test_list_documents_endpoint():
     assert docs[0]["doc_id"] == "d1"
     assert docs[0]["chunk_count"] == 2
     assert docs[0]["indexed"] is True
+    assert docs[0]["canonical_doc_id"] == ""
+    assert docs[0]["content_hash"] == ""
 
 
 def test_document_detail_endpoint():
@@ -436,6 +461,8 @@ def test_document_detail_endpoint():
     assert r.status_code == 200
     body = r.json()
     assert body["title"] == "Док"
+    assert body["canonical_doc_id"] == ""
+    assert body["content_hash"] == ""
     assert body["parents"][0]["parent_id"] == "d1::0"
     assert body["parents"][0]["chunks"][1]["chunk_index"] == 1
     # отсутствующий документ -> 404

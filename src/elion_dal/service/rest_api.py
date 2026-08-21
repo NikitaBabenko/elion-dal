@@ -64,9 +64,13 @@ class DocumentIn(BaseModel):
     published_ts: int = 0
     content_hash: str = ""
     index_in_rag: bool = True
+    academic_year: int | None = None
+    is_active: bool | None = None
     canonical_doc_id: str = ""
-    academic_year: int = 0
-    is_active: bool = True
+    metadata_fingerprint: str = ""
+    force_reindex: bool = False
+    tombstone_reason: str = ""
+    merged_into_doc_id: str = ""
     sections: list[SectionIn] = Field(default_factory=list)
     text: str = ""  # fallback: если sections пусто, весь текст = одна секция
 
@@ -228,9 +232,13 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
             content_hash=payload.content_hash,
             index_in_rag=payload.index_in_rag,
             sections=sections,
-            academic_year=payload.academic_year or None,
+            academic_year=payload.academic_year,
             is_active=payload.is_active,
             canonical_doc_id=payload.canonical_doc_id,
+            metadata_fingerprint=payload.metadata_fingerprint,
+            force_reindex=payload.force_reindex,
+            tombstone_reason=payload.tombstone_reason,
+            merged_into_doc_id=payload.merged_into_doc_id,
         )
         counts = UpsertCounts()
         try:
@@ -371,6 +379,13 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
                     "indexed": d.indexed,
                     "parent_count": d.parent_count,
                     "chunk_count": d.chunk_count,
+                    "canonical_doc_id": d.canonical_doc_id,
+                    "content_hash": d.content_hash,
+                    "academic_year": d.academic_year,
+                    "is_active": d.is_active,
+                    "metadata_fingerprint": d.metadata_fingerprint,
+                    "tombstone_reason": d.tombstone_reason,
+                    "merged_into_doc_id": d.merged_into_doc_id,
                 }
                 for d in docs
             ]
@@ -390,6 +405,13 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
             "published_ts": d.published_ts,
             "index_in_rag": d.index_in_rag,
             "indexed": d.indexed,
+            "canonical_doc_id": d.canonical_doc_id,
+            "content_hash": d.content_hash,
+            "academic_year": d.academic_year,
+            "is_active": d.is_active,
+            "metadata_fingerprint": d.metadata_fingerprint,
+            "tombstone_reason": d.tombstone_reason,
+            "merged_into_doc_id": d.merged_into_doc_id,
             "parents": [
                 {
                     "parent_id": p.parent_id,
