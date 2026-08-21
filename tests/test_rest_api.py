@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from elion_dal.config import Settings
 from elion_dal.service.rest_api import create_api
-from elion_dal.service.sync import ParentHit
+from elion_dal.service.sync import DocFailure, ParentHit
 from elion_dal.store.pg_repo import (
     ChunkDetail,
     DocDetail,
@@ -25,6 +26,9 @@ class FakeIndex:
         self.deleted_all = False
         self.processed = []
         self.updated_settings = None
+        self.last_search = None
+        self.fail_delete = False
+        self.upsert_mode = "indexed"
         self.settings_store = None  # без override токена
         self._health = {
             "ok": True,
@@ -55,30 +59,68 @@ class FakeIndex:
         self.last_search = {
             "academic_year": academic_year,
             "is_active": is_active,
+            "return_chunk": return_chunk,
         }
         return [
             ParentHit(
-                parent_id="d1::0", doc_id="d1", source_id="s1", title="t", url="u",
-                heading_path=["A"], text="parent", matched_child="child",
-                score=0.5, dense_score=0.7,
+                parent_id="d1::0",
+                doc_id="d1",
+                source_id="s1",
+                title="t",
+                url="u",
+                heading_path=["A"],
+                text="parent",
+                matched_child="child",
+                score=0.5,
+                dense_score=0.7,
+                academic_year=2026,
+                is_active=False,
             )
         ]
 
     def delete_source(self, source_id):
+        if self.fail_delete:
+            raise RuntimeError("secret backend detail")
         self.deleted_sources.append(source_id)
         return 1, 3
 
     def delete_doc(self, doc_id):
+        if self.fail_delete:
+            raise RuntimeError("secret backend detail")
         self.deleted_docs.append(doc_id)
         return 1, 3
 
     def delete_all(self):
+        if self.fail_delete:
+            raise RuntimeError("secret backend detail")
         self.deleted_all = True
         return 1, 2, 3
 
     def process_document(self, doc, counts):
         self.processed.append(doc)
+        if self.upsert_mode == "raise":
+            raise RuntimeError("secret pg detail")
         counts.received += 1
+        if not doc.index_in_rag:
+            counts.skipped += 1
+            return
+        if self.upsert_mode == "failed":
+            counts.failed += 1
+            counts.failures.append(
+                DocFailure(
+                    doc_id=doc.doc_id,
+                    stage="qdrant_upsert",
+                    written=0,
+                    total=1,
+                    error="RuntimeError: secret qdrant detail",
+                    rolled_back=True,
+                )
+            )
+        elif self.upsert_mode == "skipped":
+            counts.skipped += 1
+        elif self.upsert_mode == "blank":
+            counts.blank += 1
+        else:
         counts.indexed += 1
 
     def live_top_k(self):
@@ -91,10 +133,22 @@ class FakeIndex:
         if doc_id != "d1":
             return None
         return DocDetail(
-            "d1", "s1", "Док", "u", "ru", 0, True, True,
+            "d1",
+            "s1",
+            "Док",
+            "u",
+            "ru",
+            0,
+            True,
+            True,
             [
                 ParentDetail(
-                    "d1::0", "0", ["A"], 0, 2, "parent",
+                    "d1::0",
+                    "0",
+                    ["A"],
+                    0,
+                    2,
+                    "parent",
                     [
                         ChunkDetail("d1::0#0", 0, "child0", 1),
                         ChunkDetail("d1::0#1", 1, "child1", 1),
@@ -119,15 +173,20 @@ class FakeIndex:
             ],
         }
 
-    def preview_chunking(self, text, chunk_tokens=None, chunk_overlap=None,
-                         min_tokens=None, separator_mode=None):
+    def preview_chunking(
+        self, text, chunk_tokens=None, chunk_overlap=None, min_tokens=None, separator_mode=None
+    ):
         words = text.split()
         return {
             "chunks": [{"index": 0, "text": text, "token_count": len(words)}],
             "summary": {
-                "count": 1, "total_tokens": len(words), "avg_tokens": len(words),
-                "dropped": 0, "chunk_tokens": chunk_tokens or 400,
-                "chunk_overlap": chunk_overlap or 64, "min_tokens": min_tokens or 0,
+                "count": 1,
+                "total_tokens": len(words),
+                "avg_tokens": len(words),
+                "dropped": 0,
+                "chunk_tokens": chunk_tokens or 400,
+                "chunk_overlap": chunk_overlap or 64,
+                "min_tokens": min_tokens or 0,
                 "separator_mode": separator_mode or "structured",
             },
         }
@@ -169,7 +228,10 @@ def test_readyz_ok_when_backends_healthy():
 def test_readyz_503_when_backend_unhealthy():
     idx = FakeIndex()
     idx._health = {
-        "ok": False, "qdrant_ok": False, "postgres_ok": True, "embedding_backend": "fake",
+        "ok": False,
+        "qdrant_ok": False,
+        "postgres_ok": True,
+        "embedding_backend": "fake",
     }
     c = TestClient(create_api(idx, Settings()))
     r = c.get("/readyz")
@@ -237,11 +299,29 @@ def test_delete_all_sources_endpoint():
     assert idx.deleted_all is True
 
 
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("DELETE", "/api/v1/sources/s1"),
+        ("DELETE", "/api/v1/sources"),
+        ("DELETE", "/api/v1/documents/d1"),
+    ],
+)
+def test_delete_endpoints_return_sanitized_503(method, path):
+    idx = FakeIndex()
+    idx.fail_delete = True
+    r = TestClient(create_api(idx, Settings())).request(method, path)
+    assert r.status_code == 503
+    assert "RuntimeError" in r.json()["detail"]
+    assert "secret backend detail" not in r.text
+
+
 def test_upsert_document_with_sections():
     idx = FakeIndex()
     c = TestClient(create_api(idx, Settings()))
     payload = {
-        "doc_id": "x1", "source_id": "kb",
+        "doc_id": "x1",
+        "source_id": "kb",
         "academic_year": 2026,
         "is_active": True,
         "canonical_doc_id": "x-canonical",
@@ -265,6 +345,87 @@ def test_search_accepts_lifecycle_filters():
 
     assert r.status_code == 200
     assert idx.last_search == {"academic_year": 2026, "is_active": True}
+
+
+def test_upsert_document_maps_metadata():
+    idx = FakeIndex()
+    c = TestClient(create_api(idx, Settings()))
+    r = c.post(
+        "/api/v1/documents",
+        json={
+            "doc_id": "x1",
+            "source_id": "kb",
+            "text": "hello",
+            "canonical_doc_id": "canonical-x1",
+            "academic_year": 2026,
+            "is_active": False,
+        },
+    )
+    assert r.status_code == 200
+    doc = idx.processed[-1]
+    assert doc.canonical_doc_id == "canonical-x1"
+    assert doc.academic_year == 2026
+    assert doc.is_active is False
+
+
+@pytest.mark.parametrize("mode", ["failed", "raise"])
+def test_upsert_document_returns_diagnostic_503(mode):
+    idx = FakeIndex()
+    idx.upsert_mode = mode
+    c = TestClient(create_api(idx, Settings()))
+    r = c.post("/api/v1/documents", json={"doc_id": "x1", "source_id": "kb", "text": "x"})
+    assert r.status_code == 503
+    body = r.json()
+    assert body["failed"] == 1
+    assert body["failures"]
+    assert set(body) == {
+        "received",
+        "indexed",
+        "skipped",
+        "blank",
+        "failed",
+        "parents_upserted",
+        "chunks_upserted",
+        "failures",
+    }
+
+
+@pytest.mark.parametrize(("mode", "field"), [("skipped", "skipped"), ("blank", "blank")])
+def test_nonfailure_upsert_outcomes_stay_200(mode, field):
+    idx = FakeIndex()
+    idx.upsert_mode = mode
+    c = TestClient(create_api(idx, Settings()))
+    r = c.post("/api/v1/documents", json={"doc_id": "x1", "source_id": "kb", "text": "x"})
+    assert r.status_code == 200
+    assert r.json()[field] == 1
+
+
+def test_index_in_rag_false_stays_200():
+    idx = FakeIndex()
+    c = TestClient(create_api(idx, Settings()))
+    r = c.post(
+        "/api/v1/documents",
+        json={"doc_id": "x1", "source_id": "kb", "text": "x", "index_in_rag": False},
+    )
+    assert r.status_code == 200
+    assert r.json()["skipped"] == 1
+
+
+def test_search_maps_metadata_filters_and_result():
+    idx = FakeIndex()
+    c = TestClient(create_api(idx, Settings()))
+    r = c.post(
+        "/api/v1/search",
+        json={"query": "q", "academic_year": 2026, "is_active": False, "return_chunk": False},
+    )
+    assert r.status_code == 200
+    assert idx.last_search == {
+        "academic_year": 2026,
+        "is_active": False,
+        "return_chunk": False,
+    }
+    assert r.json()["hits"][0]["academic_year"] == 2026
+    assert r.json()["hits"][0]["is_active"] is False
 
 
 def test_upsert_document_fallback_text():

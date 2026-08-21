@@ -197,6 +197,8 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
                     "matched_child": h.matched_child,
                     "score": h.score,
                     "dense_score": h.dense_score,
+                    "academic_year": h.academic_year,
+                    "is_active": h.is_active,
                 }
                 for h in hits
             ]
@@ -204,7 +206,7 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
 
     # --- индексация документа (приходит из админки upload) ---
     @app.post("/api/v1/documents", dependencies=[Depends(auth)])
-    def upsert_document(payload: DocumentIn) -> dict:
+    def upsert_document(payload: DocumentIn) -> JSONResponse:
         sections = [
             SectionInput(
                 section_id=s.section_id,
@@ -254,7 +256,7 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
                 )
             )
             logger.exception("Не удалось обработать документ doc_id=%s", doc.doc_id)
-        return {
+        result = {
             "received": counts.received,
             "indexed": counts.indexed,
             "skipped": counts.skipped,
@@ -274,6 +276,7 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
                 for f in counts.failures
             ],
         }
+        return JSONResponse(result, status_code=503 if counts.failed else 200)
 
     # --- переиндексация (disaster recovery: пересобрать Qdrant из PG) ---
     @app.post("/api/v1/sources/{source_id}/reindex", dependencies=[Depends(auth)])

@@ -77,6 +77,9 @@ class VectorStoreServicer(pb_grpc.VectorStoreServicer):
                 content_hash=d.content_hash,
                 index_in_rag=d.index_in_rag,
                 sections=sections,
+                academic_year=d.academic_year or None,
+                is_active=d.is_active if d.HasField("is_active") else True,
+                canonical_doc_id=d.canonical_doc_id,
             )
             # Изоляция ошибок: один битый документ не должен ронять весь стрим.
             # (process_document инкрементит received первой строкой, до любых сбоев.)
@@ -98,18 +101,26 @@ class VectorStoreServicer(pb_grpc.VectorStoreServicer):
     def Search(self, request, context) -> pb.SearchResponse:
         self._authorize(context)
         top_k = request.top_k or self.settings.search_top_k
+        return_chunk = request.return_chunk if request.HasField("return_chunk") else True
         t0 = time.perf_counter()
         hits = self.index.search(
             query=request.query,
             top_k=top_k,
             source_ids=list(request.source_ids),
             min_published_ts=request.min_published_ts,
+            academic_year=request.academic_year or None,
+            is_active=request.is_active if request.HasField("is_active") else None,
+            return_chunk=return_chunk,
         )
         dt_ms = (time.perf_counter() - t0) * 1000
         if hits:
             logger.info(
                 "search hits=%d top_score=%.4f dense=%.4f %.0fms query=%r",
-                len(hits), hits[0].score, hits[0].dense_score, dt_ms, request.query,
+                len(hits),
+                hits[0].score,
+                hits[0].dense_score,
+                dt_ms,
+                request.query,
             )
         else:
             # no-hit -> сигнал к fallback (доля таких запросов = Fallback Rate в ТЗ).
@@ -127,6 +138,8 @@ class VectorStoreServicer(pb_grpc.VectorStoreServicer):
                     matched_child=h.matched_child,
                     score=h.score,
                     dense_score=h.dense_score,
+                    academic_year=h.academic_year,
+                    is_active=h.is_active,
                 )
                 for h in hits
             ]

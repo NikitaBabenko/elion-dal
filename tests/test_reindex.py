@@ -41,6 +41,7 @@ class FakeQdrant:
         """Заглушка для поиска — возвращает пустой список."""
         return []
 
+
 class FakeProvider:
     name = "fake"
     dim = 4
@@ -75,10 +76,26 @@ def make_repo(tmp_path):
     return repo
 
 
-def make_doc(doc_id="d1", text="a|b|c", h="h1", index=True, source="s1"):
+def make_doc(
+    doc_id="d1",
+    text="a|b|c",
+    h="h1",
+    index=True,
+    source="s1",
+    academic_year=0,
+    is_active=True,
+):
     return DocInput(
-        doc_id=doc_id, source_id=source, url="u", title="T", lang="ru",
-        published_ts=0, content_hash=h, index_in_rag=index,
+        doc_id=doc_id,
+        source_id=source,
+        url="u",
+        title="T",
+        lang="ru",
+        published_ts=0,
+        content_hash=h,
+        index_in_rag=index,
+        academic_year=academic_year,
+        is_active=is_active,
         sections=[SectionInput(section_id="0", heading_path=["A"], url="u", text=text)],
     )
 
@@ -104,6 +121,33 @@ def test_reindex_restores_after_qdrant_loss(tmp_path):
     # Payload-поля родителя/документа на месте.
     assert restored[0].payload["source_id"] == "s1"
     assert restored[0].payload["heading_path"] == ["A"]
+
+
+def test_real_pg_same_doc_id_and_hash_is_skipped(tmp_path):
+    repo = make_repo(tmp_path)
+    svc = make_service(repo, FakeQdrant())
+    svc.process_document(make_doc(h="same"), UpsertCounts())
+
+    counts = UpsertCounts()
+    svc.process_document(make_doc(h="same"), counts)
+
+    assert counts.skipped == 1
+    assert counts.indexed == 0
+    assert len(svc.qdrant.points["d1"]) == 3
+
+
+def test_reindex_preserves_academic_year_and_active_state(tmp_path):
+    repo = make_repo(tmp_path)
+    svc = make_service(repo, FakeQdrant())
+    svc.process_document(make_doc(academic_year=2026, is_active=False), UpsertCounts())
+
+    svc.qdrant = FakeQdrant()
+    stats = svc.reindex_from_pg()
+
+    assert stats.failed == 0
+    restored = svc.qdrant.points["d1"]
+    assert restored[0].payload["academic_year"] == 2026
+    assert restored[0].payload["is_active"] is False
 
 
 def test_reindex_skips_pending(tmp_path):

@@ -25,7 +25,7 @@ class DocFailure:
     """Гранулярный отчёт о неудачной индексации одного документа."""
 
     doc_id: str
-    stage: str  # "qdrant_upsert" | "qdrant_delete" | "embed" | "pg" | "rollback"
+    stage: str  # "embed" | "qdrant_delete" | "qdrant_upsert" | "pg" | "rollback"
     written: int  # сколько дочерних точек успело записаться до сбоя
     total: int  # сколько всего должно было
     error: str  # type(e).__name__ + краткое сообщение
@@ -63,6 +63,8 @@ class ParentHit:
     matched_child: str = ""
     score: float = 0.0
     dense_score: float = 0.0  # raw cosine лучшего ребёнка — сигнал уверенности
+    academic_year: int = 0
+    is_active: bool = True
 
 
 class IndexService:
@@ -153,37 +155,60 @@ class IndexService:
 
     def process_document(self, doc: DocInput, counts: UpsertCounts) -> None:
         counts.received += 1
-        self.pg.ensure_source(doc.source_id)
 
         raw_text = "\n\n".join(s.text for s in doc.sections)
         if not doc.content_hash:
             doc.content_hash = sha256(raw_text)
 
+        # canonical_doc_id — бизнес-идентичность, если задан; иначе сравниваем строго doc_id.
+        existing = self.pg.resolve_document(doc.doc_id, doc.canonical_doc_id)
+
         # Бланк-на-скачивание: храним в SoT, но не индексируем; чистим старые точки.
         if not doc.index_in_rag:
-            self.pg.upsert_document(doc, raw_text)
-            self.pg.replace_parents_and_chunks(doc.doc_id, [])
-            self.qdrant.delete_by_doc(doc.doc_id)
-            self.pg.set_content_hash(doc.doc_id, doc.content_hash)
+            self.pg.ensure_source(doc.source_id)
+            delete_doc_ids = []
+            if existing is not None:
+                delete_doc_ids.append(existing.doc_id)
+            if doc.doc_id not in delete_doc_ids:
+                delete_doc_ids.append(doc.doc_id)
+            try:
+                for delete_doc_id in delete_doc_ids:
+                    self.qdrant.delete_by_doc(delete_doc_id)
+            except Exception as e:  # noqa: BLE001 — изоляция сбоя по документу
+                counts.failed += 1
+                counts.failures.append(
+                    DocFailure(
+                        doc_id=doc.doc_id,
+                        stage="qdrant_delete",
+                        written=0,
+                        total=0,
+                        error=f"{type(e).__name__}: {str(e)[:200]}",
+                        rolled_back=True,
+                    )
+                )
+                logger.exception(
+                    "Удаление blank-документа из Qdrant прервано doc_id=%s", doc.doc_id
+                )
+                return
+            self.pg.commit_document_version(
+                doc,
+                raw_text,
+                [],
+                previous_doc_id=existing.doc_id if existing is not None else None,
+                touch_source_indexed=False,
+            )
             counts.blank += 1
             return
 
-        # Дедупликация по canonical_doc_id + content_hash
-        canonical_id = doc.canonical_doc_id or doc.doc_id  # fallback на doc_id
-        prev_hash = self.pg.get_content_hash_by_canonical(canonical_id)
-        if prev_hash:
-            if prev_hash == doc.content_hash:
+        if (
+            existing is not None
+            and existing.content_hash == doc.content_hash
+            and existing.index_in_rag
+        ):
                 if not doc.force_reindex:
                     counts.skipped += 1
                     return
-            else:
-                # содержимое изменилось — удаляем старые чанки
-                old_doc_id = self.pg.get_doc_id_by_canonical(canonical_id)
-                if old_doc_id:
-                    self.qdrant.delete_by_doc(old_doc_id)
-                    self.pg.delete_by_doc(old_doc_id)
 
-        self.pg.upsert_document(doc, raw_text)
         self._apply_live_chunk_params()
 
         # Секция -> родитель, текст секции -> дети.
@@ -205,23 +230,17 @@ class IndexService:
                 )
             )
 
-        self.pg.replace_parents_and_chunks(doc.doc_id, parents)
-
-        # Запись в Qdrant — «всё или ничего» по документу. И первичная чистка старого
-        # поколения (delete_by_doc), и батчи upsert обёрнуты в один try: при сбое (после
-        # ретраев внутри методов qdrant) откатываем частичную запись и НЕ ставим
-        # content_hash → самозалечивание на следующем ingest.
         flat = [(p, c) for p in parents for c in p.children]
         total = len(flat)
-        written = 0
-        stage = "qdrant_delete"
+
+        # Сначала полностью готовим embeddings в памяти. Сбой здесь не меняет ни PG,
+        # ни Qdrant: старая версия продолжает обслуживать поиск.
+        prepared: list[PointInput] = []
         try:
-            self.qdrant.delete_by_doc(doc.doc_id)  # снести старое поколение точек
-            stage = "qdrant_upsert"
             for start in range(0, total, self.upsert_batch_size):
                 window = flat[start : start + self.upsert_batch_size]
                 embeddings = self.provider.embed_documents([c.text for (_p, c) in window])
-                points = [
+                prepared.extend(
                     PointInput(
                         parent_id=p.parent_id,
                         chunk_index=c.index,
@@ -242,10 +261,47 @@ class IndexService:
                         ),
                     )
                     for (p, c), emb in zip(window, embeddings, strict=True)
-                ]
-                written += self.qdrant.upsert_chunks(points)
+                )
         except Exception as e:  # noqa: BLE001 — изоляция сбоя по документу
-            rolled_back = self._rollback_partial(doc.doc_id)
+            counts.failed += 1
+            counts.failures.append(
+                DocFailure(
+                    doc_id=doc.doc_id,
+                    stage="embed",
+                    written=0,
+                    total=total,
+                    error=f"{type(e).__name__}: {str(e)[:200]}",
+                    rolled_back=False,
+                )
+            )
+            logger.exception("Подготовка embeddings прервана doc_id=%s", doc.doc_id)
+            return
+
+        # Источник создаём только после успешной подготовки и до удаления старых точек.
+        self.pg.ensure_source(doc.source_id)
+
+        # Практичный replace без поколений: чистим старую/целевую identity, пишем новые
+        # точки, затем атомарно фиксируем всю версию документа в PostgreSQL.
+        written = 0
+        stage = "qdrant_delete"
+        try:
+            delete_doc_ids = []
+            if existing is not None:
+                delete_doc_ids.append(existing.doc_id)
+            if doc.doc_id not in delete_doc_ids:
+                delete_doc_ids.append(doc.doc_id)
+            for delete_doc_id in delete_doc_ids:
+                self.qdrant.delete_by_doc(delete_doc_id)
+
+            stage = "qdrant_upsert"
+            for start in range(0, total, self.upsert_batch_size):
+                written += self.qdrant.upsert_chunks(
+                    prepared[start : start + self.upsert_batch_size]
+                )
+        except Exception as e:  # noqa: BLE001 — изоляция сбоя по документу
+            rolled_back = (
+                True if stage == "qdrant_delete" else self._rollback_partial(doc.doc_id)
+            )
             counts.failed += 1
             counts.failures.append(
                 DocFailure(
@@ -259,16 +315,40 @@ class IndexService:
             )
             logger.exception(
                 "Индексация прервана doc_id=%s на стадии %s (записано %d/%d, откат=%s)",
-                doc.doc_id, stage, written, total, rolled_back,
+                doc.doc_id,
+                stage,
+                written,
+                total,
+                rolled_back,
             )
-            # content_hash НЕ фиксируем — документ останется pending.
+            # PostgreSQL не меняли: старый hash останется commit point для повтора.
             return
-        counts.chunks_upserted += written
 
-        # Commit point: фиксируем хеш только теперь — Qdrant уже обновлён.
-        self.pg.set_content_hash(doc.doc_id, doc.content_hash)
+        try:
+            self.pg.commit_document_version(
+                doc,
+                raw_text,
+                parents,
+                previous_doc_id=existing.doc_id if existing is not None else None,
+            )
+        except Exception as e:  # noqa: BLE001 — PG commit после успешного Qdrant
+            rolled_back = self._rollback_partial(doc.doc_id)
+            counts.failed += 1
+            counts.failures.append(
+                DocFailure(
+                    doc_id=doc.doc_id,
+                    stage="pg",
+                    written=written,
+                    total=total,
+                    error=f"{type(e).__name__}: {str(e)[:200]}",
+                    rolled_back=rolled_back,
+                )
+            )
+            logger.exception("Фиксация документа в PostgreSQL прервана doc_id=%s", doc.doc_id)
+            return
+
+        counts.chunks_upserted += written
         counts.parents_upserted += len(parents)
-        self.pg.touch_source_indexed(doc.source_id)
         counts.indexed += 1
 
     @staticmethod
@@ -372,6 +452,8 @@ class IndexService:
                     matched_child=child_text,               # ← текст чанка
                     score=rrf,
                     dense_score=dense_map.get(child_chunk_id, 0.0),
+                    academic_year=rec.academic_year,
+                    is_active=rec.is_active,
                 )
             )
 
@@ -449,9 +531,7 @@ class IndexService:
                                 ),
                             )
                         )
-                    stats.chunks += (
-                        len(points) if dry_run else self.qdrant.upsert_chunks(points)
-                    )
+                    stats.chunks += len(points) if dry_run else self.qdrant.upsert_chunks(points)
             except Exception:  # noqa: BLE001 — изоляция сбоя по документу
                 stats.failed += 1
                 logger.exception("reindex прерван на doc_id=%s", row.doc_id)
@@ -541,14 +621,16 @@ class IndexService:
         # Сколько кусков отсеял фильтр: считаем без min_tokens и сравниваем.
         kept = preview_chunker.split(text)
         total_before = (
-            len(Chunker(
+            len(
+                Chunker(
                 chunk_tokens=tokens,
                 chunk_overlap=overlap,
                 model_name=model_name,
                 min_tokens=0,
                 separator_mode=mode,
                 length_fn=length_fn,
-            ).split(text))
+                ).split(text)
+            )
             if min_tok
             else len(kept)
         )
