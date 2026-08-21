@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from elion_dal.chunking.chunker import Chunk
 from elion_dal.embedding.base import Embedding, SparseVector
 from elion_dal.service.sync import IndexService, UpsertCounts
-from elion_dal.store.pg_repo import DocInput, ParentRecord, SectionInput
+from elion_dal.store.pg_repo import DocInput, ExistingDocument, ParentRecord, SectionInput
 from elion_dal.store.qdrant_repo import SearchHit
 
 
@@ -24,12 +26,26 @@ class FakePg:
         self.parents: dict[str, list] = {}
         self.sources: set[str] = set()
         self.touched: list[str] = []
+        self.fail_commit = False
 
     def ensure_source(self, source_id, name=None):
         self.sources.add(source_id)
 
     def get_content_hash(self, doc_id):
         return self.hashes.get(doc_id)
+
+    def resolve_document(self, doc_id, canonical_doc_id=""):
+        resolved_doc_id = (
+            self.canonical_doc_ids.get(canonical_doc_id) if canonical_doc_id else doc_id
+        )
+        if resolved_doc_id not in self.docs:
+            return None
+        stored = self.docs[resolved_doc_id]
+        return ExistingDocument(
+            doc_id=resolved_doc_id,
+            content_hash=self.hashes.get(resolved_doc_id, ""),
+            index_in_rag=stored.index_in_rag,
+        )
 
     def get_content_hash_by_canonical(self, canonical_doc_id):
         """Получить content_hash по canonical_doc_id."""
@@ -70,6 +86,26 @@ class FakePg:
     def replace_parents_and_chunks(self, doc_id, parents):
         self.parents[doc_id] = list(parents)
 
+    def commit_document_version(
+        self, doc, raw_text, parents, previous_doc_id=None, touch_source_indexed=True
+    ):
+        if self.fail_commit:
+            raise RuntimeError("postgres commit failed")
+        if previous_doc_id and previous_doc_id != doc.doc_id:
+            previous = self.docs.pop(previous_doc_id, None)
+            self.parents.pop(previous_doc_id, None)
+            self.hashes.pop(previous_doc_id, None)
+            if previous and previous.canonical_doc_id:
+                self.canonical_doc_ids.pop(previous.canonical_doc_id, None)
+                self.canonical_hashes.pop(previous.canonical_doc_id, None)
+        self.docs[doc.doc_id] = doc
+        self.parents[doc.doc_id] = list(parents)
+        self.set_content_hash(doc.doc_id, doc.content_hash)
+        if doc.canonical_doc_id:
+            self.canonical_doc_ids[doc.canonical_doc_id] = doc.doc_id
+        if touch_source_indexed:
+            self.touched.append(doc.source_id)
+
     def get_parents(self, parent_ids):
         out: dict[str, ParentRecord] = {}
         for doc_id, plist in self.parents.items():
@@ -102,6 +138,7 @@ class FakeQdrant:
         self.search_hits: list[SearchHit] = []
         self.fail_upserts: int = 0  # сколько ближайших upsert_chunks уронить
         self.fail_deletes: int = 0  # сколько ближайших delete_by_doc уронить (для rollback-теста)
+        self.fail_rollback: bool = False
         self.upsert_calls: int = 0  # счётчик вызовов upsert_chunks (для теста батчинга)
         self.prefetch: int = 20
         self.last_limit: int | None = None
@@ -118,6 +155,8 @@ class FakeQdrant:
         self.upsert_calls += 1
         if self.fail_upserts > 0:
             self.fail_upserts -= 1
+            if self.fail_rollback:
+                self.fail_deletes += 1
             raise RuntimeError("qdrant upsert failed")
         for p in points:
             self.points.setdefault(p.payload["doc_id"], []).append(p)
@@ -165,7 +204,13 @@ class FakeProvider:
     dim = 4
     sparse_uses_idf = False
 
+    def __init__(self):
+        self.fail_documents = 0
+
     def embed_documents(self, texts):
+        if self.fail_documents > 0:
+            self.fail_documents -= 1
+            raise RuntimeError("embedding failed")
         return [Embedding(dense=[0.0] * 4, sparse=SparseVector([1], [1.0])) for _ in texts]
 
     def embed_query(self, text):
@@ -200,7 +245,15 @@ def section(text, sid="0", url="u"):
     return SectionInput(section_id=sid, heading_path=[], url=url, text=text)
 
 
-def doc(text="a|b|c", h="h1", index=True, doc_id="d1", sections=None, published_ts=0):
+def doc(
+    text="a|b|c",
+    h="h1",
+    index=True,
+    doc_id="d1",
+    sections=None,
+    published_ts=0,
+    canonical_doc_id="",
+):
     if sections is None:
         sections = [section(text)]
     return DocInput(
@@ -213,6 +266,7 @@ def doc(text="a|b|c", h="h1", index=True, doc_id="d1", sections=None, published_
         content_hash=h,
         index_in_rag=index,
         sections=sections,
+        canonical_doc_id=canonical_doc_id,
     )
 
 
@@ -230,9 +284,13 @@ def test_unchanged_document_skipped():
     svc = make_service()
     counts = UpsertCounts()
     svc.process_document(doc(h="same"), counts)
+    deletes_after_first = list(svc.qdrant.deleted_docs)
+    upserts_after_first = svc.qdrant.upsert_calls
     svc.process_document(doc(h="same"), counts)
     assert counts.indexed == 1
     assert counts.skipped == 1
+    assert svc.qdrant.deleted_docs == deletes_after_first
+    assert svc.qdrant.upsert_calls == upserts_after_first
 
 
 def test_force_reindex_bypasses_same_hash_deduplication():
@@ -258,6 +316,84 @@ def test_changed_document_reindexed():
     assert len(svc.qdrant.points["d1"]) == 4
 
 
+def test_canonical_unchanged_hash_skips_new_doc_id():
+    svc = make_service()
+    counts = UpsertCounts()
+    svc.process_document(doc(h="same", doc_id="d1", canonical_doc_id="canonical"), counts)
+    svc.process_document(doc(h="same", doc_id="d2", canonical_doc_id="canonical"), counts)
+    assert counts.indexed == 1
+    assert counts.skipped == 1
+    assert "d1" in svc.pg.docs
+    assert "d2" not in svc.pg.docs
+
+
+def test_canonical_changed_hash_replaces_old_doc_id():
+    svc = make_service()
+    counts = UpsertCounts()
+    svc.process_document(doc(h="v1", doc_id="d1", canonical_doc_id="canonical"), counts)
+    svc.process_document(
+        doc(text="new|version", h="v2", doc_id="d2", canonical_doc_id="canonical"), counts
+    )
+    assert counts.indexed == 2
+    assert "d1" not in svc.pg.docs
+    assert svc.pg.hashes["d2"] == "v2"
+    assert "d1" not in svc.qdrant.points
+    assert len(svc.qdrant.points["d2"]) == 2
+
+
+def test_embedding_failure_preserves_previous_version():
+    svc = make_service()
+    svc.process_document(doc(text="old|version", h="v1"), UpsertCounts())
+    old_points = list(svc.qdrant.points["d1"])
+    old_parents = list(svc.pg.parents["d1"])
+    deletes_before = list(svc.qdrant.deleted_docs)
+    svc.provider.fail_documents = 1
+
+    counts = UpsertCounts()
+    svc.process_document(doc(text="new|version", h="v2"), counts)
+
+    assert counts.failed == 1
+    assert counts.failures[0].stage == "embed"
+    assert svc.pg.hashes["d1"] == "v1"
+    assert svc.pg.parents["d1"] == old_parents
+    assert svc.qdrant.points["d1"] == old_points
+    assert svc.qdrant.deleted_docs == deletes_before
+
+
+def test_changed_document_qdrant_failure_keeps_old_postgres_for_retry():
+    svc = make_service()
+    svc.process_document(doc(text="old", h="v1"), UpsertCounts())
+    svc.qdrant.fail_upserts = 1
+
+    failed = UpsertCounts()
+    svc.process_document(doc(text="new", h="v2"), failed)
+    assert failed.failed == 1
+    assert svc.pg.hashes["d1"] == "v1"
+    assert svc.pg.parents["d1"][0].text == "old"
+
+    retried = UpsertCounts()
+    svc.process_document(doc(text="new", h="v2"), retried)
+    assert retried.indexed == 1
+    assert svc.pg.hashes["d1"] == "v2"
+    assert svc.pg.parents["d1"][0].text == "new"
+
+
+def test_postgres_commit_failure_rolls_back_new_qdrant_points():
+    svc = make_service()
+    svc.process_document(doc(text="old", h="v1"), UpsertCounts())
+    svc.pg.fail_commit = True
+
+    counts = UpsertCounts()
+    svc.process_document(doc(text="new", h="v2"), counts)
+
+    assert counts.failed == 1
+    assert counts.failures[0].stage == "pg"
+    assert counts.failures[0].rolled_back is True
+    assert svc.pg.hashes["d1"] == "v1"
+    assert svc.pg.parents["d1"][0].text == "old"
+    assert "d1" not in svc.qdrant.points
+
+
 def test_blank_not_indexed():
     svc = make_service()
     counts = UpsertCounts()
@@ -265,6 +401,37 @@ def test_blank_not_indexed():
     assert counts.blank == 1
     assert counts.chunks_upserted == 0
     assert svc.qdrant.points.get("d1") is None
+
+
+def test_blank_can_be_enabled_with_same_hash():
+    svc = make_service()
+    svc.process_document(doc(h="same", index=False), UpsertCounts())
+
+    counts = UpsertCounts()
+    svc.process_document(doc(h="same", index=True), counts)
+    assert counts.indexed == 1
+    assert counts.skipped == 0
+    assert svc.pg.docs["d1"].index_in_rag is True
+    assert svc.qdrant.points["d1"]
+
+
+def test_blank_replaces_previous_canonical_doc_id():
+    svc = make_service()
+    svc.process_document(
+        doc(h="v1", doc_id="d1", canonical_doc_id="canonical"), UpsertCounts()
+    )
+
+    counts = UpsertCounts()
+    svc.process_document(
+        doc(h="v2", index=False, doc_id="d2", canonical_doc_id="canonical"), counts
+    )
+
+    assert counts.blank == 1
+    assert "d1" not in svc.pg.docs
+    assert svc.pg.hashes["d2"] == "v2"
+    assert svc.pg.docs["d2"].index_in_rag is False
+    assert "d1" not in svc.qdrant.points
+    assert "d2" not in svc.qdrant.points
 
 
 def test_content_hash_autocomputed():
@@ -317,7 +484,7 @@ def test_rollback_failure_marked():
     """P1: если и откат падает -> rolled_back=False, hash всё равно pending."""
     svc = make_service()
     svc.qdrant.fail_upserts = 1
-    svc.qdrant.fail_deletes = 99  # откат тоже не пройдёт
+    svc.qdrant.fail_rollback = True
     counts = UpsertCounts()
     svc.process_document(doc(h="v1"), counts)
     assert counts.failed == 1
@@ -335,6 +502,64 @@ def test_upsert_batched_by_size():
     assert counts.indexed == 1
     assert counts.chunks_upserted == 5
     assert svc.qdrant.upsert_calls == 3
+
+
+@pytest.mark.parametrize(
+    ("service_method", "qdrant_method", "pg_method", "args", "expected"),
+    [
+        ("delete_doc", "delete_by_doc", "delete_by_doc", ("d1",), (1, 3)),
+        ("delete_source", "delete_by_source", "delete_by_source", ("s1",), (2, 6)),
+        ("delete_all", "delete_all", "delete_all", (), (1, 2, 6)),
+    ],
+)
+def test_delete_calls_qdrant_before_postgres(
+    service_method, qdrant_method, pg_method, args, expected
+):
+    svc = make_service()
+    calls = []
+
+    def qdrant_delete(*_args):
+        calls.append("qdrant")
+
+    def pg_delete(*_args):
+        calls.append("postgres")
+        return expected
+
+    setattr(svc.qdrant, qdrant_method, qdrant_delete)
+    setattr(svc.pg, pg_method, pg_delete)
+
+    assert getattr(svc, service_method)(*args) == expected
+    assert calls == ["qdrant", "postgres"]
+
+
+@pytest.mark.parametrize(
+    ("service_method", "qdrant_method", "pg_method", "args"),
+    [
+        ("delete_doc", "delete_by_doc", "delete_by_doc", ("d1",)),
+        ("delete_source", "delete_by_source", "delete_by_source", ("s1",)),
+        ("delete_all", "delete_all", "delete_all", ()),
+    ],
+)
+def test_delete_does_not_touch_postgres_when_qdrant_fails(
+    service_method, qdrant_method, pg_method, args
+):
+    svc = make_service()
+    calls = []
+
+    def qdrant_delete(*_args):
+        calls.append("qdrant")
+        raise RuntimeError("qdrant unavailable")
+
+    def pg_delete(*_args):
+        calls.append("postgres")
+        raise AssertionError("PostgreSQL must not be called")
+
+    setattr(svc.qdrant, qdrant_method, qdrant_delete)
+    setattr(svc.pg, pg_method, pg_delete)
+
+    with pytest.raises(RuntimeError, match="qdrant unavailable"):
+        getattr(svc, service_method)(*args)
+    assert calls == ["qdrant"]
 
 
 def test_multisection_creates_two_parents():

@@ -54,6 +54,16 @@ class DocInput:
     tombstone_reason: str = ""
     merged_into_doc_id: str = ""
 
+
+@dataclass(slots=True, frozen=True)
+class ExistingDocument:
+    """Сохранённая версия логического документа для идемпотентного ingest."""
+
+    doc_id: str
+    content_hash: str
+    index_in_rag: bool
+
+
 @dataclass(slots=True)
 class ParentBuild:
     """Готовый к записи родитель с его дочерними чанками."""
@@ -80,6 +90,8 @@ class ParentRecord:
     heading_path: list[str]
     text: str
     published_ts: int = 0
+    academic_year: int = 0
+    is_active: bool = True
 
 
 @dataclass(slots=True)
@@ -126,6 +138,8 @@ class DocReindexRow:
     title: str
     lang: str
     published_ts: int
+    academic_year: int
+    is_active: bool
     parents: dict[str, ParentReindex]  # parent_id -> (url, heading_path)
     chunks: list[ChunkRow]  # все дети документа в порядке (parent, index)
 
@@ -250,6 +264,29 @@ class PgRepo:
                 select(Document.content_hash).where(Document.doc_id == doc_id)
             ).scalar_one_or_none()
 
+    def resolve_document(self, doc_id: str, canonical_doc_id: str = "") -> ExistingDocument | None:
+        """Найти логический документ: по canonical_doc_id либо строго по doc_id."""
+        with self._sm() as s:
+            if canonical_doc_id:
+                row = s.execute(
+                    select(Document.doc_id, Document.content_hash, Document.index_in_rag).where(
+                        Document.canonical_doc_id == canonical_doc_id
+                    )
+                ).one_or_none()
+            else:
+                row = s.execute(
+                    select(Document.doc_id, Document.content_hash, Document.index_in_rag).where(
+                        Document.doc_id == doc_id
+                    )
+                ).one_or_none()
+        if row is None:
+            return None
+        return ExistingDocument(
+            doc_id=row.doc_id,
+            content_hash=row.content_hash,
+            index_in_rag=bool(row.index_in_rag),
+        )
+
     def get_content_hash_by_canonical(self, canonical_doc_id: str) -> str | None:
         """Получить content_hash по canonical_doc_id."""
         with self._sm() as s:
@@ -284,8 +321,8 @@ class PgRepo:
                         raw_text=raw_text,
                         index_in_rag=doc.index_in_rag,
                         canonical_doc_id=doc.canonical_doc_id,
-                        academic_year=doc.academic_year,
-                        is_active=doc.is_active,
+                        academic_year=doc.academic_year or 0,
+                        is_active=True if doc.is_active is None else doc.is_active,
                         metadata_fingerprint=doc.metadata_fingerprint,
                         tombstone_reason=doc.tombstone_reason,
                         merged_into_doc_id=doc.merged_into_doc_id,
@@ -300,8 +337,8 @@ class PgRepo:
                 existing.raw_text = raw_text
                 existing.index_in_rag = doc.index_in_rag
                 existing.canonical_doc_id = doc.canonical_doc_id
-                existing.academic_year = doc.academic_year
-                existing.is_active = doc.is_active
+                existing.academic_year = doc.academic_year or 0
+                existing.is_active = True if doc.is_active is None else doc.is_active
                 existing.metadata_fingerprint = doc.metadata_fingerprint
                 existing.tombstone_reason = doc.tombstone_reason
                 existing.merged_into_doc_id = doc.merged_into_doc_id
@@ -318,8 +355,52 @@ class PgRepo:
         with self._sm.begin() as s:
             # Удаляем старых родителей документа — каскад снесёт и детей.
             s.execute(delete(Parent).where(Parent.doc_id == doc_id))
+            self._add_parents_and_chunks(s, doc_id, parents)
+
+    def commit_document_version(
+        self,
+        doc: DocInput,
+        raw_text: str,
+        parents: Sequence[ParentBuild],
+        previous_doc_id: str | None = None,
+        touch_source_indexed: bool = True,
+    ) -> None:
+        """Атомарно зафиксировать мету, parents/chunks и успешный content_hash."""
+        with self._sm.begin() as s:
+            if previous_doc_id and previous_doc_id != doc.doc_id:
+                s.execute(delete(Document).where(Document.doc_id == previous_doc_id))
+
+            existing = s.get(Document, doc.doc_id)
+            if existing is None:
+                existing = Document(doc_id=doc.doc_id, source_id=doc.source_id)
+                s.add(existing)
+
+            existing.source_id = doc.source_id
+            existing.url = doc.url
+            existing.title = doc.title
+            existing.lang = doc.lang
+            existing.published_ts = doc.published_ts
+            existing.content_hash = doc.content_hash
+            existing.raw_text = raw_text
+            existing.index_in_rag = doc.index_in_rag
+            existing.canonical_doc_id = doc.canonical_doc_id
+            existing.academic_year = doc.academic_year or 0
+            existing.is_active = True if doc.is_active is None else doc.is_active
+
+            s.execute(delete(Parent).where(Parent.doc_id == doc.doc_id))
+            self._add_parents_and_chunks(s, doc.doc_id, parents)
+
+            if touch_source_indexed:
+                source = s.get(Source, doc.source_id)
+                if source is not None:
+                    source.last_indexed_at = func.now()
+
+    @staticmethod
+    def _add_parents_and_chunks(
+        session: Session, doc_id: str, parents: Sequence[ParentBuild]
+    ) -> None:
             for p in parents:
-                s.add(
+            session.add(
                     Parent(
                         parent_id=p.parent_id,
                         doc_id=doc_id,
@@ -332,7 +413,7 @@ class PgRepo:
                     )
                 )
                 for c in p.children:
-                    s.add(
+                session.add(
                         Chunk(
                             chunk_id=chunk_id(p.parent_id, c.index),
                             parent_id=p.parent_id,
@@ -349,12 +430,19 @@ class PgRepo:
             return {}
         with self._sm() as s:
             rows = s.execute(
-                select(Parent, Document.source_id, Document.title, Document.published_ts)
+                select(
+                    Parent,
+                    Document.source_id,
+                    Document.title,
+                    Document.published_ts,
+                    Document.academic_year,
+                    Document.is_active,
+                )
                 .join(Document, Document.doc_id == Parent.doc_id)
                 .where(Parent.parent_id.in_(list(parent_ids)))
             ).all()
         result: dict[str, ParentRecord] = {}
-        for parent, source_id, title, published_ts in rows:
+        for parent, source_id, title, published_ts, academic_year, is_active in rows:
             result[parent.parent_id] = ParentRecord(
                 parent_id=parent.parent_id,
                 doc_id=parent.doc_id,
@@ -364,6 +452,8 @@ class PgRepo:
                 heading_path=list(parent.heading_path or []),
                 text=parent.text,
                 published_ts=int(published_ts or 0),
+                academic_year=int(academic_year or 0),
+                is_active=True if is_active is None else bool(is_active),
             )
         return result
 
@@ -466,14 +556,10 @@ class PgRepo:
                 q = q.where(Document.source_id == source_id)
             docs = list(s.execute(q.order_by(Document.source_id, Document.title)).scalars())
             parent_counts = dict(
-                s.execute(
-                    select(Parent.doc_id, func.count()).group_by(Parent.doc_id)
-                ).all()
+                s.execute(select(Parent.doc_id, func.count()).group_by(Parent.doc_id)).all()
             )
             chunk_counts = dict(
-                s.execute(
-                    select(Chunk.doc_id, func.count()).group_by(Chunk.doc_id)
-                ).all()
+                s.execute(select(Chunk.doc_id, func.count()).group_by(Chunk.doc_id)).all()
             )
         return [
             DocSummary(
@@ -670,14 +756,12 @@ class PgRepo:
                         select(Document).where(Document.doc_id.in_(window))
                     ).scalars()
                 }
-                parents = list(
-                    s.execute(select(Parent).where(Parent.doc_id.in_(window))).scalars()
-                )
+                parents = list(s.execute(select(Parent).where(Parent.doc_id.in_(window))).scalars())
                 chunks = list(
                     s.execute(
-                        select(Chunk).where(Chunk.doc_id.in_(window)).order_by(
-                            Chunk.parent_id, Chunk.chunk_index
-                        )
+                        select(Chunk)
+                        .where(Chunk.doc_id.in_(window))
+                        .order_by(Chunk.parent_id, Chunk.chunk_index)
                     ).scalars()
                 )
             parents_by_doc: dict[str, dict[str, ParentReindex]] = {}
@@ -700,6 +784,8 @@ class PgRepo:
                     title=d.title,
                     lang=d.lang,
                     published_ts=int(d.published_ts or 0),
+                    academic_year=int(d.academic_year or 0),
+                    is_active=True if d.is_active is None else bool(d.is_active),
                     parents=parents_by_doc.get(doc_id, {}),
                     chunks=chunks_by_doc.get(doc_id, []),
                 )

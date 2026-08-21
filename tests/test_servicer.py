@@ -16,6 +16,7 @@ class FakeIndex:
         self._hits = []
         self.deleted_docs = []
         self.updated_settings = None
+        self.last_search = None
 
     def process_document(self, doc, counts):
         self.docs.append(doc)
@@ -27,7 +28,22 @@ class FakeIndex:
     def set_hits(self, hits):
         self._hits = hits
 
-    def search(self, query, top_k, source_ids, min_published_ts):
+    def search(
+        self,
+        query,
+        top_k,
+        source_ids,
+        min_published_ts,
+        academic_year=None,
+        is_active=None,
+        return_chunk=True,
+    ):
+        self.last_search = {
+            "top_k": top_k,
+            "academic_year": academic_year,
+            "is_active": is_active,
+            "return_chunk": return_chunk,
+        }
         return self._hits
 
     def delete_doc(self, doc_id):
@@ -82,6 +98,28 @@ def test_upsert_fallback_text_becomes_single_parent():
     assert mapped.sections[0].text == "плоский текст"
 
 
+def test_upsert_maps_document_metadata_and_defaults():
+    svc = make_servicer()
+    explicit = pb.Document(
+        doc_id="d1",
+        source_id="s1",
+        text="x",
+        canonical_doc_id="canonical-d1",
+        academic_year=2026,
+        is_active=False,
+    )
+    defaulted = pb.Document(doc_id="d2", source_id="s1", text="y")
+
+    svc.UpsertDocuments(iter([explicit, defaulted]), None)
+
+    mapped, mapped_default = svc.index.docs
+    assert mapped.canonical_doc_id == "canonical-d1"
+    assert mapped.academic_year == 2026
+    assert mapped.is_active is False
+    assert mapped_default.academic_year is None
+    assert mapped_default.is_active is True
+
+
 def test_search_maps_parent_hits():
     svc = make_servicer()
     svc.index.set_hits(
@@ -97,6 +135,8 @@ def test_search_maps_parent_hits():
                 matched_child="ребёнок",
                 score=0.42,
                 dense_score=0.77,
+                academic_year=2026,
+                is_active=False,
             )
         ]
     )
@@ -109,6 +149,36 @@ def test_search_maps_parent_hits():
     assert h.matched_child == "ребёнок"
     assert abs(h.score - 0.42) < 1e-6
     assert abs(h.dense_score - 0.77) < 1e-6
+    assert h.academic_year == 2026
+    assert h.is_active is False
+
+
+def test_search_honors_optional_filter_presence_and_chunk_default():
+    svc = make_servicer()
+
+    svc.Search(pb.SearchRequest(query="q"), None)
+    assert svc.index.last_search == {
+        "top_k": Settings().search_top_k,
+        "academic_year": None,
+        "is_active": None,
+        "return_chunk": True,
+    }
+
+    svc.Search(
+        pb.SearchRequest(
+            query="q",
+            academic_year=2026,
+            is_active=False,
+            return_chunk=False,
+        ),
+        None,
+    )
+    assert svc.index.last_search == {
+        "top_k": Settings().search_top_k,
+        "academic_year": 2026,
+        "is_active": False,
+        "return_chunk": False,
+    }
 
 
 def test_delete_by_doc():
@@ -168,9 +238,9 @@ def test_search_uses_config_top_k_when_zero():
     captured = {}
     orig = svc.index.search
 
-    def spy(query, top_k, source_ids, min_published_ts):
+    def spy(query, top_k, source_ids, min_published_ts, **kwargs):
         captured["top_k"] = top_k
-        return orig(query, top_k, source_ids, min_published_ts)
+        return orig(query, top_k, source_ids, min_published_ts, **kwargs)
 
     svc.index.search = spy
     svc.Search(pb.SearchRequest(query="q", top_k=0), None)
