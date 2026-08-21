@@ -344,7 +344,11 @@ def test_search_accepts_lifecycle_filters():
     )
 
     assert r.status_code == 200
-    assert idx.last_search == {"academic_year": 2026, "is_active": True}
+    assert idx.last_search == {
+        "academic_year": 2026,
+        "is_active": True,
+        "return_chunk": True,
+    }
 
 
 @pytest.mark.parametrize(("mode", "field"), [("skipped", "skipped"), ("blank", "blank")])
