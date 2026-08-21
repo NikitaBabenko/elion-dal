@@ -399,31 +399,31 @@ class PgRepo:
     def _add_parents_and_chunks(
         session: Session, doc_id: str, parents: Sequence[ParentBuild]
     ) -> None:
-            for p in parents:
+        for p in parents:
             session.add(
-                    Parent(
+                Parent(
+                    parent_id=p.parent_id,
+                    doc_id=doc_id,
+                    section_id=p.section_id,
+                    heading_path=p.heading_path,
+                    url=p.url,
+                    text=p.text,
+                    token_count=p.token_count,
+                    ordinal=p.ordinal,
+                )
+            )
+            for c in p.children:
+                session.add(
+                    Chunk(
+                        chunk_id=chunk_id(p.parent_id, c.index),
                         parent_id=p.parent_id,
                         doc_id=doc_id,
-                        section_id=p.section_id,
-                        heading_path=p.heading_path,
-                        url=p.url,
-                        text=p.text,
-                        token_count=p.token_count,
-                        ordinal=p.ordinal,
+                        chunk_index=c.index,
+                        text=c.text,
+                        token_count=c.token_count,
+                        content_hash=sha256(c.text),
                     )
                 )
-                for c in p.children:
-                session.add(
-                        Chunk(
-                            chunk_id=chunk_id(p.parent_id, c.index),
-                            parent_id=p.parent_id,
-                            doc_id=doc_id,
-                            chunk_index=c.index,
-                            text=c.text,
-                            token_count=c.token_count,
-                            content_hash=sha256(c.text),
-                        )
-                    )
 
     def get_parents(self, parent_ids: Sequence[str]) -> dict[str, ParentRecord]:
         if not parent_ids:
