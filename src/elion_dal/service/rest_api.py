@@ -29,8 +29,11 @@ import json
 import logging
 import secrets
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
+import anyio.to_thread
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -132,7 +135,20 @@ def _make_auth_dep(index: IndexService, settings: Settings):
 
 
 def create_api(index: IndexService, settings: Settings) -> FastAPI:
-    app = FastAPI(title="Элион — DAL REST API", version="0.2")
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # Ручки объявлены обычными `def`, поэтому FastAPI выполняет их в пуле
+        # потоков anyio. Его дефолт (40) для нас не потолок пропускной
+        # способности, а источник конкуренции: горячий участок поиска —
+        # CPU-bound эмбеддинг запроса, и лишние потоки лишь дерутся за ядра
+        # и за соединения к PG. Держим предел явным и согласованным с пулом
+        # соединений, а масштабируемся репликами процесса.
+        limiter = anyio.to_thread.current_default_thread_limiter()
+        limiter.total_tokens = settings.rest_workers
+        logger.info("REST thread pool limited to %d workers", settings.rest_workers)
+        yield
+
+    app = FastAPI(title="Элион — DAL REST API", version="0.2", lifespan=lifespan)
     auth = _make_auth_dep(index, settings)
 
     @app.get("/healthz")

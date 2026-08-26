@@ -19,7 +19,11 @@ from .sync import IndexService
 
 def build_index_service(settings: Settings | None = None, ensure: bool = True) -> IndexService:
     settings = settings or get_settings()
-    pg = PgRepo(settings.pg_dsn)
+    pg = PgRepo(
+        settings.pg_dsn,
+        pool_size=settings.pg_pool_size,
+        max_overflow=settings.pg_max_overflow,
+    )
     store = SettingsStore(pg.engine)
     store.load()
 
