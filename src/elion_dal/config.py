@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     admin_enabled: bool = True
     admin_host: str = "0.0.0.0"
     admin_port: int = 8080
+    # Сколько синхронных ручек REST выполняется одновременно. Дефолтные для
+    # anyio 40 потоков здесь вредны: горячий участок поиска — эмбеддинг
+    # запроса, он CPU-bound, и лишние потоки только конкурируют за ядра и
+    # за соединения к PG. Горизонтально DAL масштабируется репликами
+    # процесса, а не ростом этого числа.
+    rest_workers: int = 16
     # Basic-auth админки: логин/пароль из env. Пустой пароль => auth выключен (dev).
     admin_user: str = "admin"
     admin_password: str = ""
@@ -53,6 +59,11 @@ class Settings(BaseSettings):
 
     # Postgres (source-of-truth)
     pg_dsn: str = "postgresql+psycopg://elion:elion@localhost:5432/elion"
+    # Пул соединений к PG. Синхронные ручки REST выполняются в пуле потоков
+    # (см. rest_workers), поэтому пул соединений не должен быть заметно уже:
+    # иначе потоки просто стоят в очереди за соединением.
+    pg_pool_size: int = 16
+    pg_max_overflow: int = 8
     # Создавать схему БД при старте (create_all) — чтобы деплой работал из коробки.
     # Идемпотентно. Для окружений с alembic выставить false и катать миграции отдельно.
     auto_migrate: bool = True

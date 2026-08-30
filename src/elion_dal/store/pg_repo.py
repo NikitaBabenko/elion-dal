@@ -212,8 +212,19 @@ class DocDetail:
 
 
 class PgRepo:
-    def __init__(self, dsn: str) -> None:
-        self.engine = create_engine(dsn, pool_pre_ping=True, future=True)
+    def __init__(
+        self, dsn: str, *, pool_size: int | None = None, max_overflow: int | None = None
+    ) -> None:
+        # SQLite собирается на пуле без очереди и таких аргументов не принимает.
+        pool_kwargs: dict = {}
+        if not dsn.startswith("sqlite"):
+            if pool_size is not None:
+                pool_kwargs["pool_size"] = pool_size
+            if max_overflow is not None:
+                pool_kwargs["max_overflow"] = max_overflow
+        self.engine = create_engine(
+            dsn, pool_pre_ping=True, future=True, **pool_kwargs
+        )
         # SQLite (локальный режим без Postgres) не включает внешние ключи по
         # умолчанию — без этого не сработает ON DELETE CASCADE.
         if dsn.startswith("sqlite"):

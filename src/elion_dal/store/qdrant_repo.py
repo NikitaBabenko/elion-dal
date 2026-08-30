@@ -99,6 +99,34 @@ class QdrantRepo:
         except Exception:
             return False
 
+    def collection_state(self) -> dict:
+        """Состояние коллекции для readiness (§2 docs/api/dal).
+
+        Три разных вопроса в одном ответе: существует ли коллекция вообще,
+        совпадает ли её dense-размерность с размерностью текущей модели
+        (сменили модель без пересоздания — поиск будет отвечать мусором) и
+        есть ли в ней данные. Счёт приблизительный: точный на большой
+        коллекции стоит дороже, чем сама проба.
+        """
+        state: dict = {
+            "exists": False,
+            "dim_expected": self.dim,
+            "dim_actual": None,
+            "points": None,
+        }
+        try:
+            if not self.client.collection_exists(self.collection):
+                return state
+            state["exists"] = True
+            info = self.client.get_collection(self.collection)
+            state["dim_actual"] = info.config.params.vectors[DENSE].size
+            state["points"] = self.client.count(
+                self.collection, exact=False
+            ).count
+        except Exception:  # noqa: BLE001 — проба обязана ответить, а не упасть
+            logger.warning("Failed to read Qdrant collection state", exc_info=True)
+        return state
+
     def ensure_collection(self) -> None:
         if self.client.collection_exists(self.collection):
             self._warn_on_dim_mismatch()

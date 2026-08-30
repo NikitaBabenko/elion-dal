@@ -660,3 +660,38 @@ class IndexService:
             "postgres_ok": pok,
             "embedding_backend": self.provider.name,
         }
+
+    def readiness(self) -> dict:
+        """Готовность отдавать поиск (§2 docs/api/dal).
+
+        Связности с Qdrant мало: коллекция может отсутствовать после чистого
+        старта, а после смены модели эмбеддингов — существовать с чужой
+        размерностью. И то и другое означает «поиск не работает», хотя ping
+        отвечает.
+
+        Контракт называет третьей проверкой активный production-снапшот.
+        Снапшотов и алиасов индекса в этой реализации нет (секция «Publish
+        snapshot» не реализована), поэтому проверяется их фактический
+        эквивалент: коллекция существует и не пуста.
+        """
+        qok = self.qdrant.ping()
+        pok = self.pg.ping()
+        collection = self.qdrant.collection_state()
+
+        dim_actual = collection.get("dim_actual")
+        schema_ok = dim_actual is None or dim_actual == collection["dim_expected"]
+        points = collection.get("points")
+        has_data = bool(collection.get("exists")) and (points is None or points > 0)
+
+        checks = {
+            "qdrant": "ok" if qok else "unavailable",
+            "postgres": "ok" if pok else "unavailable",
+            "index": "ok" if has_data else ("empty" if collection.get("exists") else "missing"),
+            "schema": "ok" if schema_ok else "mismatch",
+        }
+        return {
+            "ok": all(value == "ok" for value in checks.values()),
+            "checks": checks,
+            "embedding_backend": self.provider.name,
+            "embedding_dim": collection["dim_expected"],
+        }
