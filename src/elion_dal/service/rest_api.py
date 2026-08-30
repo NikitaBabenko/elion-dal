@@ -1,11 +1,13 @@
 # ruff: noqa: B008
 """REST API сервера (FastAPI). Заменил gRPC как публичный контракт.
 
-Все ручки (кроме `/healthz`) требуют Bearer-токен из env/админки (`API_TOKEN`):
+Все ручки (кроме проб здоровья) требуют Bearer-токен из env/админки (`API_TOKEN`):
     Authorization: Bearer <token>
 
 Эндпоинты:
-- GET    /healthz                    — health (открыт)
+- GET    /live                        — liveness, без проверки бэкендов (открыт)
+- GET    /ready                       — readiness: Qdrant, индекс, схема (открыт)
+- GET    /healthz, /readyz            — прежние алиасы тех же проб (открыты)
 - POST   /api/v1/search               — гибридный поиск, top-k родителей
 - POST   /api/v1/documents            — upsert документа (для админки upload)
 # - POST   /api/v1/sources/{source_id}/reindex
@@ -151,15 +153,38 @@ def create_api(index: IndexService, settings: Settings) -> FastAPI:
     app = FastAPI(title="Элион — DAL REST API", version="0.2", lifespan=lifespan)
     auth = _make_auth_dep(index, settings)
 
+    @app.get("/live")
+    def live() -> dict:
+        # Liveness по контракту (§2 docs/api/dal): «процесс жив», без обращения
+        # к бэкендам. Проверять здесь Qdrant значит просить перезапуск процесса
+        # из-за чужой недоступности.
+        return {"status": "ok", "service": "dal", "version": app.version}
+
+    @app.get("/ready")
+    def ready() -> JSONResponse:
+        # Readiness по контракту: связность Qdrant, наличие живого индекса и
+        # совместимость схемы/эмбеддингов. 503 снимает под с трафика, пока
+        # поиск не может отвечать по существу.
+        state = index.readiness()
+        return JSONResponse(
+            {
+                "status": "ready" if state["ok"] else "not_ready",
+                "service": "dal",
+                "checks": state["checks"],
+                "embedding_backend": state["embedding_backend"],
+                "embedding_dim": state["embedding_dim"],
+            },
+            status_code=200 if state["ok"] else 503,
+        )
+
+    # Совместимость: платформенные пробы и healthcheck в docker-compose уже
+    # настроены на эти пути. Оставлены как алиасы /live и /ready.
     @app.get("/healthz")
     def healthz() -> dict:
-        # Liveness: «процесс жив». Открыт, без проверки бэкендов — для health-проб платформы.
         return {"status": "ok"}
 
     @app.get("/readyz")
     def readyz() -> JSONResponse:
-        # Readiness: реально пингует Qdrant+PG. Платформа снимает под с трафика при 503.
-        # Открыт (без auth), как и /healthz. index.health() сам не падает (ping в try/except).
         h = index.health()
         return JSONResponse(h, status_code=200 if h.get("ok") else 503)
 
