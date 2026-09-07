@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from elion_dal.chunking.chunker import Chunk
+from elion_dal.store.models import Document
 from elion_dal.store.pg_repo import DocInput, ParentBuild, PgRepo, SectionInput
 
 
@@ -14,6 +15,29 @@ def make_repo(tmp_path):
     repo = PgRepo(f"sqlite:///{(tmp_path / 'elion_test.db').as_posix()}")
     repo.create_all()
     return repo
+
+
+def test_lifecycle_columns_have_defaults():
+    columns = Document.__table__.c
+    assert columns.academic_year.nullable is False
+    assert columns.is_active.nullable is False
+    assert columns.academic_year.default.arg == 0
+    assert columns.is_active.default.arg is True
+
+
+def test_commit_preserves_backfill_metadata(tmp_path):
+    repo = make_repo(tmp_path)
+    repo.ensure_source("s1")
+    doc = make_doc()
+    doc.index_in_rag = False
+    doc.metadata_fingerprint = "metadata-v1"
+    doc.tombstone_reason = "merged"
+    doc.merged_into_doc_id = "d2"
+    repo.commit_document_version(doc, raw_text="", parents=[])
+    detail = repo.get_document_detail(doc.doc_id)
+    assert detail.metadata_fingerprint == "metadata-v1"
+    assert detail.tombstone_reason == "merged"
+    assert detail.merged_into_doc_id == "d2"
 
 
 def make_doc(

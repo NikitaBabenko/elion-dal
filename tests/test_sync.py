@@ -45,6 +45,10 @@ class FakePg:
             doc_id=resolved_doc_id,
             content_hash=self.hashes.get(resolved_doc_id, ""),
             index_in_rag=stored.index_in_rag,
+            academic_year=stored.academic_year or 0,
+            is_active=True if stored.is_active is None else stored.is_active,
+            published_ts=stored.published_ts,
+            metadata_fingerprint=stored.metadata_fingerprint,
         )
 
     def get_content_hash_by_canonical(self, canonical_doc_id):

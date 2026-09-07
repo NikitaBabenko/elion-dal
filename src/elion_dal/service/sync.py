@@ -204,10 +204,16 @@ class IndexService:
             existing is not None
             and existing.content_hash == doc.content_hash
             and existing.index_in_rag
+            # Хеш текста не меняется при исправлении lifecycle в ETL.
+            # Такие обновления должны попасть и в PG, и в payload Qdrant.
+            and existing.academic_year == (doc.academic_year or 0)
+            and existing.is_active == (True if doc.is_active is None else doc.is_active)
+            and existing.published_ts == doc.published_ts
+            and existing.metadata_fingerprint == doc.metadata_fingerprint
+            and not doc.force_reindex
         ):
-                if not doc.force_reindex:
-                    counts.skipped += 1
-                    return
+            counts.skipped += 1
+            return
 
         self._apply_live_chunk_params()
 
