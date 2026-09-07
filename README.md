@@ -142,7 +142,16 @@ grpcurl -plaintext -d '{"query":"налоговый вычет","top_k":3}' \
 
 `POST /api/v1/documents` идемпотентен по паре «идентификатор + `content_hash`»:
 идентификатором служит `canonical_doc_id`, если он передан, иначе `doc_id`. Совпавший
-хеш возвращает `skipped`, изменившийся — запускает серверную переиндексацию документа.
+хеш возвращает `skipped` только при совпадении `academic_year`, `is_active`,
+`published_ts` и `metadata_fingerprint`. Изменение этих метаданных при прежнем
+тексте также запускает серверную переиндексацию документа (PG и Qdrant).
+`force_reindex=true` принудительно обновляет документ даже при полном совпадении.
+
+После исправления устаревших lifecycle-метаданных нужно повторно загрузить
+актуальные документы из ETL/JSONL: пересборка Qdrant из PG сама по себе не исправит
+неверные значения в PG. Для сверки без зависимости от релевантности используйте
+`GET /api/v1/documents?source_id=...`: ответ содержит `doc_id`, `canonical_doc_id`,
+`content_hash`, `academic_year`, `is_active` и `metadata_fingerprint`.
 
 OpenAPI/Swagger: `/docs` (FastAPI отдаёт автоматом).
 

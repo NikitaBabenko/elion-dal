@@ -62,6 +62,10 @@ class ExistingDocument:
     doc_id: str
     content_hash: str
     index_in_rag: bool
+    academic_year: int = 0
+    is_active: bool = True
+    published_ts: int = 0
+    metadata_fingerprint: str = ""
 
 
 @dataclass(slots=True)
@@ -278,24 +282,27 @@ class PgRepo:
     def resolve_document(self, doc_id: str, canonical_doc_id: str = "") -> ExistingDocument | None:
         """Найти логический документ: по canonical_doc_id либо строго по doc_id."""
         with self._sm() as s:
-            if canonical_doc_id:
-                row = s.execute(
-                    select(Document.doc_id, Document.content_hash, Document.index_in_rag).where(
-                        Document.canonical_doc_id == canonical_doc_id
-                    )
-                ).one_or_none()
-            else:
-                row = s.execute(
-                    select(Document.doc_id, Document.content_hash, Document.index_in_rag).where(
-                        Document.doc_id == doc_id
-                    )
-                ).one_or_none()
+            identity = (
+                Document.canonical_doc_id == canonical_doc_id
+                if canonical_doc_id else Document.doc_id == doc_id
+            )
+            row = s.execute(
+                select(
+                    Document.doc_id, Document.content_hash, Document.index_in_rag,
+                    Document.academic_year, Document.is_active, Document.published_ts,
+                    Document.metadata_fingerprint,
+                ).where(identity)
+            ).one_or_none()
         if row is None:
             return None
         return ExistingDocument(
             doc_id=row.doc_id,
             content_hash=row.content_hash,
             index_in_rag=bool(row.index_in_rag),
+            academic_year=int(row.academic_year or 0),
+            is_active=True if row.is_active is None else bool(row.is_active),
+            published_ts=int(row.published_ts or 0),
+            metadata_fingerprint=row.metadata_fingerprint or "",
         )
 
     def get_content_hash_by_canonical(self, canonical_doc_id: str) -> str | None:
@@ -397,6 +404,10 @@ class PgRepo:
             existing.canonical_doc_id = doc.canonical_doc_id
             existing.academic_year = doc.academic_year or 0
             existing.is_active = True if doc.is_active is None else doc.is_active
+
+            existing.metadata_fingerprint = doc.metadata_fingerprint
+            existing.tombstone_reason = doc.tombstone_reason
+            existing.merged_into_doc_id = doc.merged_into_doc_id
 
             s.execute(delete(Parent).where(Parent.doc_id == doc.doc_id))
             self._add_parents_and_chunks(s, doc.doc_id, parents)
